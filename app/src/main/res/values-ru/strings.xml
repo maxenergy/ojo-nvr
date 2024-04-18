@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ojo</string>
+    <!-- Strings used for fragments for navigation -->
+    <string name="first_fragment_label">Первый Фрагмент</string>
+    <string name="second_fragment_label">Второй Фрагмент</string>
+
+    <string name="fab_add_camera">Добавить</string>
+
+    <string name="stream_list_default_camera_name">VidБезымянная камера №{camNo}</string>
+
+    <string name="add_stream_placeholder_url">rtsp://username:password@192.168.1.123:554</string>
+    <string name="add_stream_placeholder_name">Название IP камеры</string>
+    <string name="add_stream_name">Нзвание потока IP камеры</string>
+    <string name="add_stream_save">Сохранить</string>
+    <string name="add_stream_invalid_url">Неправильный RTSP URL</string>
+    <string name="add_stream_invalid_url_dismiss">Закрыть</string>
+    <string name="add_stream_error_saving">Произошла ошибка при сохранении конфигурации</string>
+    <string name="add_stream">Пожалуйста введите RTSP поток  вашей камеры. Обратите внимание, что URL отличается от камеры к камере: вы можете найти полный URL адрес в настройках вашей камеры или руководстве пользователя.</string>
+    <string name="menuitem_allow_rotation">Разрешить вращение экрана</string>
+    <string name="menuitem_deny_rotation">Только альбомная</string>
+    <string name="menuitem_info">Инфо</string>
+    <string name="menuitem_add_camera">Добавить</string>
+
+    <string name="app_info_title">О программе</string>
+    <string name="app_info_creator_desc">Автор: Daniele Verducci.</string>
+    <string name="app_info_license_desc">Это приложение лицензировано в соответствии с GNU GENERAL PUBLIC LICENSE v3+. Ознакомьтесь тут: https://raw.githubusercontent.com/penguin86/ojo/master/LICENSE</string>
+    <string name="app_info_repo_desc">Исходный код в репозитории на GitHub:: https://github.com/penguin86/ojo</string>
+    <string name="app_info_lib_desc">Это приложение стало возможным благодаря усилиям команды VLC и VLC-Android! Вы можете узнать больше или получить исходный код тут: https://code.videolan.org/videolan/vlc-android</string>
+
+</resources>
