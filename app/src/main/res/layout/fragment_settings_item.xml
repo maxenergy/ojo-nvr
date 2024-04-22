@@ -5,7 +5,9 @@
     android:layout_height="wrap_content"
     android:paddingTop="@dimen/text_margin"
     android:paddingBottom="@dimen/text_margin"
-    android:orientation="horizontal">
+    android:orientation="horizontal"
+    android:focusable="true"
+    android:focusableInTouchMode="true">
 
     <ImageView
         android:layout_width="wrap_content"
