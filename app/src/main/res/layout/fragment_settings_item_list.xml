@@ -12,7 +12,7 @@
         android:id="@+id/settingsToolbar"
         app:title="@string/app_name"
         style="@style/ToolBarStyle"
-        />
+        android:focusable="true"/>
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/list"
@@ -24,6 +24,7 @@
         android:layout_marginRight="16dp"
         app:layoutManager="LinearLayoutManager"
         tools:context=".ui.SettingsFragment"
-        tools:listitem="@layout/fragment_settings_item" />
+        tools:listitem="@layout/fragment_settings_item"
+        android:focusable="true" />
 
 </LinearLayout>

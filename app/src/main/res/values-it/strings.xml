@@ -27,5 +27,7 @@
     <string name="app_info_license_desc">Questa app è rilasciata sotto licenza GNU GENERAL PUBLIC LICENSE v3+. Puoi ottenerne una copia qui: https://raw.githubusercontent.com/penguin86/ojo/master/LICENSE</string>
     <string name="app_info_repo_desc">Puoi trovare il codice sorgente al repository: https://github.com/penguin86/ojo</string>
     <string name="app_info_lib_desc">Questa app è resa possibile dal magnifico lavoro dei team vlc and vlc-android! Per saperne di più o ottenere il codice sorgente: https://code.videolan.org/videolan/vlc-android</string>
+    <string name="app_info_translators_title">Traduttori:</string>
+    <string name="app_info_translators_names">Yurt Page (Russian)</string>
 
 </resources>
