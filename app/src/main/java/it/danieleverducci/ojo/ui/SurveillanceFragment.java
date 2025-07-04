@@ -27,6 +27,7 @@ import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.source.MediaSource;
+import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.rtsp.RtspMediaSource;
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
@@ -70,6 +71,12 @@ public class SurveillanceFragment extends Fragment {
     private static final long BUFFER_SIZE_MS = 3000;     // 3 seconds buffer
     private static final long MIN_BUFFER_MS = 1000;      // 1 second minimum buffer
     private static final boolean ENABLE_HARDWARE_ACCELERATION = true; // Use hardware decoding when available
+
+    // Test streams for debugging (mix of HTTP and RTSP)
+    private static final String[] TEST_STREAMS = {
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4"
+    };
 
     private FragmentSurveillanceBinding binding;
     private List<CameraView> cameraViews = new ArrayList<>();
@@ -188,6 +195,15 @@ public class SurveillanceFragment extends Fragment {
     private void addAllCameras() {
         Settings settings = Settings.fromDisk(getContext());
         List<Camera> cc = settings.getCameras();
+
+        // If no cameras configured, add test streams for debugging
+        if (cc.isEmpty()) {
+            Log.d(TAG, "No cameras configured, adding test streams for debugging");
+            cc = new ArrayList<>();
+            for (int i = 0; i < TEST_STREAMS.length; i++) {
+                cc.add(new Camera("Test Stream " + (i + 1), TEST_STREAMS[i]));
+            }
+        }
 
         // Limit concurrent streams for performance
         if (cc.size() > MAX_CONCURRENT_STREAMS) {
@@ -373,6 +389,31 @@ public class SurveillanceFragment extends Fragment {
             SurfaceHolder holder = surfaceView.getHolder();
             holder.setKeepScreenOn(true);
 
+            // Add surface callback for proper lifecycle management
+            holder.addCallback(new SurfaceHolder.Callback() {
+                @Override
+                public void surfaceCreated(SurfaceHolder holder) {
+                    Log.d(TAG, "Surface created for camera: " + camera.getName());
+                    // Surface is ready, ExoPlayer can use it
+                    // Draw a test pattern to verify surface is working
+                    drawTestPattern(holder);
+                }
+
+                @Override
+                public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                    Log.d(TAG, "Surface changed for camera: " + camera.getName() +
+                          " - " + width + "x" + height + ", format: " + format);
+                    // Redraw test pattern on surface change
+                    drawTestPattern(holder);
+                }
+
+                @Override
+                public void surfaceDestroyed(SurfaceHolder holder) {
+                    Log.d(TAG, "Surface destroyed for camera: " + camera.getName());
+                    // Surface is being destroyed
+                }
+            });
+
             // Create ExoPlayer instance with performance optimizations
             exoPlayer = new ExoPlayer.Builder(context)
                     .setLoadControl(createOptimizedLoadControl())
@@ -382,12 +423,35 @@ public class SurveillanceFragment extends Fragment {
             // Set video surface
             exoPlayer.setVideoSurfaceView(surfaceView);
 
-            // Create RTSP media source
+            // Create media source based on URL type
             DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(context);
-            RtspMediaSource.Factory rtspSourceFactory = new RtspMediaSource.Factory();
-
             MediaItem mediaItem = MediaItem.fromUri(camera.getRtspUrl());
-            mediaSource = rtspSourceFactory.createMediaSource(mediaItem);
+
+            try {
+                String url = camera.getRtspUrl().toLowerCase();
+                if (url.startsWith("rtsp://")) {
+                    // Create RTSP media source with enhanced configuration
+                    RtspMediaSource.Factory rtspSourceFactory = new RtspMediaSource.Factory()
+                            .setForceUseRtpTcp(false)  // Allow UDP first, fallback to TCP
+                            .setTimeoutMs(RTSP_TIMEOUT_MS);
+                    mediaSource = rtspSourceFactory.createMediaSource(mediaItem);
+                    Log.d(TAG, "Created RTSP media source for: " + camera.getRtspUrl());
+                } else if (url.startsWith("http://") || url.startsWith("https://")) {
+                    // Create progressive media source for HTTP streams
+                    com.google.android.exoplayer2.source.ProgressiveMediaSource.Factory progressiveFactory =
+                        new com.google.android.exoplayer2.source.ProgressiveMediaSource.Factory(dataSourceFactory);
+                    mediaSource = progressiveFactory.createMediaSource(mediaItem);
+                    Log.d(TAG, "Created HTTP media source for: " + camera.getRtspUrl());
+                } else {
+                    Log.e(TAG, "Unsupported URL scheme for: " + camera.getRtspUrl());
+                    mediaSource = null;
+                    return;
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create media source for " + camera.getName() + ": " + e.getMessage());
+                mediaSource = null;
+                return;
+            }
 
             // Set up player listener for error handling and state changes
             exoPlayer.addListener(new Player.Listener() {
@@ -422,9 +486,14 @@ public class SurveillanceFragment extends Fragment {
                 @Override
                 public void onPlayerError(PlaybackException error) {
                     currentState = PlayerState.ERROR;
+
+                    // Log detailed error information
+                    String errorDetails = getDetailedErrorInfo(error);
                     Log.e(TAG, "ExoPlayer error for camera " + camera.getName() +
                           " (attempt " + (retryCount + 1) + "/" + MAX_RETRY_ATTEMPTS + "): " +
                           error.getMessage());
+                    Log.e(TAG, "Error details: " + errorDetails);
+                    Log.e(TAG, "RTSP URL: " + camera.getRtspUrl());
 
                     // Log error metrics
                     if (performanceMonitor != null) {
@@ -438,13 +507,19 @@ public class SurveillanceFragment extends Fragment {
                         scheduleRestart();
                     } else {
                         Log.e(TAG, "Max retry attempts reached for camera: " + camera.getName());
+                        Log.e(TAG, "Final error details: " + errorDetails);
                     }
                 }
             });
 
             // Prepare the player with media source
-            exoPlayer.setMediaSource(mediaSource);
-            exoPlayer.prepare();
+            if (mediaSource != null) {
+                exoPlayer.setMediaSource(mediaSource);
+                exoPlayer.prepare();
+            } else {
+                Log.e(TAG, "Cannot prepare player - media source is null for camera: " + camera.getName());
+                currentState = PlayerState.ERROR;
+            }
         }
 
         public void setOnClickListener(View.OnClickListener listener) {
@@ -539,6 +614,38 @@ public class SurveillanceFragment extends Fragment {
         }
 
         /**
+         * Gets detailed error information for debugging.
+         */
+        private String getDetailedErrorInfo(PlaybackException error) {
+            StringBuilder details = new StringBuilder();
+            details.append("Error Code: ").append(error.errorCode).append(", ");
+            details.append("Type: ");
+
+            switch (error.errorCode) {
+                case PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED:
+                    details.append("Network connection failed");
+                    break;
+                case PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT:
+                    details.append("Network connection timeout");
+                    break;
+                case PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED:
+                    details.append("Malformed container/SDP");
+                    break;
+                case PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED:
+                    details.append("Malformed manifest");
+                    break;
+                default:
+                    details.append("Unknown (").append(error.errorCode).append(")");
+            }
+
+            if (error.getCause() != null) {
+                details.append(", Cause: ").append(error.getCause().getMessage());
+            }
+
+            return details.toString();
+        }
+
+        /**
          * Destroys the object and frees the memory
          */
         public void destroy() {
@@ -609,6 +716,41 @@ public class SurveillanceFragment extends Fragment {
             }
 
             return factory;
+        }
+
+        /**
+         * Draws a test pattern on the surface to verify rendering is working.
+         */
+        private void drawTestPattern(SurfaceHolder holder) {
+            try {
+                android.graphics.Canvas canvas = holder.lockCanvas();
+                if (canvas != null) {
+                    // Clear with a color based on camera name
+                    int color = camera.getName().hashCode() | 0xFF000000; // Ensure alpha is set
+                    canvas.drawColor(color);
+
+                    // Draw some text
+                    android.graphics.Paint paint = new android.graphics.Paint();
+                    paint.setColor(android.graphics.Color.WHITE);
+                    paint.setTextSize(48);
+                    paint.setAntiAlias(true);
+
+                    String text = "Test: " + camera.getName();
+                    float x = canvas.getWidth() / 2 - paint.measureText(text) / 2;
+                    float y = canvas.getHeight() / 2;
+                    canvas.drawText(text, x, y, paint);
+
+                    // Draw a border
+                    paint.setStyle(android.graphics.Paint.Style.STROKE);
+                    paint.setStrokeWidth(5);
+                    canvas.drawRect(5, 5, canvas.getWidth() - 5, canvas.getHeight() - 5, paint);
+
+                    holder.unlockCanvasAndPost(canvas);
+                    Log.d(TAG, "Drew test pattern for camera: " + camera.getName());
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error drawing test pattern: " + e.getMessage());
+            }
         }
     }
 }
