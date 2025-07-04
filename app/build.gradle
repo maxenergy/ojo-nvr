@@ -13,6 +13,7 @@ android {
         versionName "0.1.4"
 
         vectorDrawables.useSupportLibrary = true
+        multiDexEnabled true
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -43,6 +44,9 @@ dependencies {
     // ExoPlayer for RTSP streaming (replacing libvlc)
     implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
     implementation 'com.google.android.exoplayer:exoplayer-rtsp:2.19.1'
+
+    // MultiDex support for large app
+    implementation 'androidx.multidex:multidex:2.0.1'
 
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
     implementation 'androidx.recyclerview:recyclerview:1.2.1'

@@ -54,6 +54,11 @@ public class SurveillanceFragment extends Fragment {
 
     final static private String TAG = "SurveillanceFragment";
 
+    // Player states for better error handling
+    protected enum PlayerState {
+        IDLE, PREPARING, READY, BUFFERING, ERROR, ENDED
+    }
+
     // ExoPlayer configuration constants
     private static final long RTSP_TIMEOUT_MS = 10000; // 10 seconds timeout
     private static final boolean ENABLE_AUDIO = true;  // Enable audio for RTSP streams
@@ -344,11 +349,6 @@ public class SurveillanceFragment extends Fragment {
         protected boolean isPlayerReady = false;
         protected int retryCount = 0;
         protected boolean isDestroyed = false;
-
-        // Player states for better error handling
-        protected enum PlayerState {
-            IDLE, PREPARING, READY, BUFFERING, ERROR, ENDED
-        }
         protected PlayerState currentState = PlayerState.IDLE;
 
         public CameraView(Context context, Camera camera) {
@@ -384,8 +384,7 @@ public class SurveillanceFragment extends Fragment {
 
             // Create RTSP media source
             DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(context);
-            RtspMediaSource.Factory rtspSourceFactory = new RtspMediaSource.Factory(dataSourceFactory)
-                    .setTimeoutMs(RTSP_TIMEOUT_MS);
+            RtspMediaSource.Factory rtspSourceFactory = new RtspMediaSource.Factory();
 
             MediaItem mediaItem = MediaItem.fromUri(camera.getRtspUrl());
             mediaSource = rtspSourceFactory.createMediaSource(mediaItem);
