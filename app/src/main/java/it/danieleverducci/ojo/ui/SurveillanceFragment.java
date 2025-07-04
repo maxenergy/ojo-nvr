@@ -21,10 +21,15 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.fragment.app.Fragment;
 
-import org.videolan.libvlc.IVLCVout;
-import org.videolan.libvlc.LibVLC;
-import org.videolan.libvlc.Media;
-import org.videolan.libvlc.MediaPlayer;
+// ExoPlayer imports for RTSP streaming
+import com.google.android.exoplayer2.ExoPlayer;
+import com.google.android.exoplayer2.MediaItem;
+import com.google.android.exoplayer2.PlaybackException;
+import com.google.android.exoplayer2.Player;
+import com.google.android.exoplayer2.source.MediaSource;
+import com.google.android.exoplayer2.source.rtsp.RtspMediaSource;
+import com.google.android.exoplayer2.ui.PlayerView;
+import com.google.android.exoplayer2.upstream.DefaultDataSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,14 +49,10 @@ import it.danieleverducci.ojo.utils.DpiUtils;
 public class SurveillanceFragment extends Fragment {
 
     final static private String TAG = "SurveillanceFragment";
-    final static private String[] VLC_OPTIONS = new String[]{
-            "--aout=opensles",
-            //"--audio-time-stretch", // time stretching
-            //"-vvv", // verbosity
-            "--avcodec-codec=h264",
-            //"--file-logging",
-            //"--logfile=vlc-log.txt"
-    };
+
+    // ExoPlayer configuration constants
+    private static final long RTSP_TIMEOUT_MS = 10000; // 10 seconds timeout
+    private static final boolean ENABLE_AUDIO = true;  // Enable audio for RTSP streams
 
     private FragmentSurveillanceBinding binding;
     private List<CameraView> cameraViews = new ArrayList<>();
@@ -145,6 +146,11 @@ public class SurveillanceFragment extends Fragment {
         super.onPause();
 
         leanbackMode(false);
+
+        // Pause all players before disposing to save resources
+        for (CameraView cv : cameraViews) {
+            cv.pausePlayback();
+        }
 
         disposeAllCameras();
     }
@@ -298,48 +304,65 @@ public class SurveillanceFragment extends Fragment {
 
     /**
      * Contains all entities (views and java entities) related to a camera stream viewer
+     * Now using ExoPlayer instead of VLC for RTSP streaming
      */
     private class CameraView {
         protected SurfaceView surfaceView;
-        protected MediaPlayer mediaPlayer;
-        protected IVLCVout ivlcVout;
+        protected ExoPlayer exoPlayer;
         protected Camera camera;
-        protected LibVLC libvlc;
+        protected MediaSource mediaSource;
+        protected boolean isPlayerReady = false;
 
         public CameraView(Context context, Camera camera) {
             this.camera = camera;
-            this.libvlc = new LibVLC(context, new ArrayList<>(Arrays.asList(VLC_OPTIONS)));
 
+            // Create SurfaceView for video rendering
             surfaceView = new SurfaceView(context);
             surfaceView.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-
+                    // Click handler will be set externally
                 }
             });
-            surfaceView.setOnFocusChangeListener((view, hasFocus) -> view.setBackgroundResource(hasFocus ? R.drawable.focus_border : 0));
-            SurfaceHolder holder = surfaceView.getHolder();
+            surfaceView.setOnFocusChangeListener((view, hasFocus) ->
+                view.setBackgroundResource(hasFocus ? R.drawable.focus_border : 0));
 
+            SurfaceHolder holder = surfaceView.getHolder();
             holder.setKeepScreenOn(true);
 
-            // Create media player
-            mediaPlayer = new MediaPlayer(libvlc);
+            // Create ExoPlayer instance
+            exoPlayer = new ExoPlayer.Builder(context).build();
 
-            // Set up video output
-            ivlcVout = mediaPlayer.getVLCVout();
-            ivlcVout.setVideoView(surfaceView);
-            ivlcVout.attachViews();
+            // Set video surface
+            exoPlayer.setVideoSurfaceView(surfaceView);
 
-            // Load media and start playing
-            Media m = new Media(libvlc, Uri.parse(camera.getRtspUrl()));
-            mediaPlayer.setMedia(m);
+            // Create RTSP media source
+            DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(context);
+            RtspMediaSource.Factory rtspSourceFactory = new RtspMediaSource.Factory(dataSourceFactory)
+                    .setTimeoutMs(RTSP_TIMEOUT_MS);
 
-            // Register for view resize events
-            final ViewTreeObserver observer= surfaceView.getViewTreeObserver();
-            observer.addOnGlobalLayoutListener(() -> {
-                // Set rendering size
-                ivlcVout.setWindowSize(surfaceView.getWidth(), surfaceView.getHeight());
+            MediaItem mediaItem = MediaItem.fromUri(camera.getRtspUrl());
+            mediaSource = rtspSourceFactory.createMediaSource(mediaItem);
+
+            // Set up player listener for error handling and state changes
+            exoPlayer.addListener(new Player.Listener() {
+                @Override
+                public void onPlaybackStateChanged(int state) {
+                    isPlayerReady = (state == Player.STATE_READY);
+                    Log.d(TAG, "Player state changed: " + state + " for camera: " + camera.getName());
+                }
+
+                @Override
+                public void onPlayerError(PlaybackException error) {
+                    Log.e(TAG, "ExoPlayer error for camera " + camera.getName() + ": " + error.getMessage());
+                    // Attempt to restart playback after error
+                    restartPlayback();
+                }
             });
+
+            // Prepare the player with media source
+            exoPlayer.setMediaSource(mediaSource);
+            exoPlayer.prepare();
         }
 
         public void setOnClickListener(View.OnClickListener listener) {
@@ -350,25 +373,49 @@ public class SurveillanceFragment extends Fragment {
          * Starts the playback.
          */
         public void startPlayback() {
-            mediaPlayer.play();
+            if (exoPlayer != null) {
+                exoPlayer.setPlayWhenReady(true);
+                Log.d(TAG, "Starting playback for camera: " + camera.getName());
+            }
+        }
+
+        /**
+         * Pauses the playback.
+         */
+        public void pausePlayback() {
+            if (exoPlayer != null) {
+                exoPlayer.setPlayWhenReady(false);
+                Log.d(TAG, "Pausing playback for camera: " + camera.getName());
+            }
+        }
+
+        /**
+         * Restarts playback after an error or connection issue.
+         */
+        private void restartPlayback() {
+            if (exoPlayer != null) {
+                Log.d(TAG, "Restarting playback for camera: " + camera.getName());
+                exoPlayer.stop();
+                exoPlayer.setMediaSource(mediaSource);
+                exoPlayer.prepare();
+                exoPlayer.setPlayWhenReady(true);
+            }
         }
 
         /**
          * Destroys the object and frees the memory
          */
         public void destroy() {
-            if (libvlc == null) {
+            if (exoPlayer == null) {
                 Log.e(TAG, this.toString() + " already destroyed");
                 return;
             }
 
-            mediaPlayer.stop();
-            final IVLCVout vout = mediaPlayer.getVLCVout();
-            vout.detachViews();
-            libvlc.release();
-            libvlc = null;
-            mediaPlayer.release();
-            mediaPlayer = null;
+            Log.d(TAG, "Destroying camera view for: " + camera.getName());
+            exoPlayer.stop();
+            exoPlayer.release();
+            exoPlayer = null;
+            mediaSource = null;
         }
     }
 }
