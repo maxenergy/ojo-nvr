@@ -7,7 +7,7 @@
 
 ### 1.2 核心特性
 - **多摄像头支持**: 自动计算网格布局（1x1, 2x2, 3x3, 4x4等）
-- **RTSP流播放**: 基于VLC库的高性能视频解码
+- **RTSP流播放**: 基于ExoPlayer的高性能视频解码
 - **智能布局**: 根据摄像头数量自动调整显示网格
 - **全屏切换**: 点击摄像头可切换全屏/网格视图
 - **Android TV支持**: 完整的Leanback支持
@@ -19,11 +19,11 @@
 
 ### 2.1 技术栈
 ```
-平台: Android (API 15-33)
+平台: Android (API 16-33)
 语言: Java (无C++/Kotlin代码)
 构建: Gradle 7.4.0
 UI: Android原生 + View Binding
-视频: VLC Android库 (libvlc-android 2.1.12)
+视频: ExoPlayer 2.19.1 (替代VLC)
 导航: Android Navigation Component
 ```
 
@@ -34,8 +34,9 @@ androidx.appcompat:appcompat:1.6.1
 com.google.android.material:material:1.8.0
 androidx.navigation:navigation-fragment:2.5.3
 
-// 视频播放核心
-de.mrmaffen:libvlc-android:2.1.12@aar
+// 视频播放核心 (ExoPlayer替代VLC)
+com.google.android.exoplayer:exoplayer:2.19.1
+com.google.android.exoplayer:exoplayer-rtsp:2.19.1
 
 // UI组件
 androidx.recyclerview:recyclerview:1.2.1
