@@ -53,6 +53,8 @@ public class SurveillanceFragment extends Fragment {
     // ExoPlayer configuration constants
     private static final long RTSP_TIMEOUT_MS = 10000; // 10 seconds timeout
     private static final boolean ENABLE_AUDIO = true;  // Enable audio for RTSP streams
+    private static final int MAX_RETRY_ATTEMPTS = 3;   // Maximum retry attempts on error
+    private static final long RETRY_DELAY_MS = 5000;   // Delay between retry attempts
 
     private FragmentSurveillanceBinding binding;
     private List<CameraView> cameraViews = new ArrayList<>();
@@ -312,6 +314,14 @@ public class SurveillanceFragment extends Fragment {
         protected Camera camera;
         protected MediaSource mediaSource;
         protected boolean isPlayerReady = false;
+        protected int retryCount = 0;
+        protected boolean isDestroyed = false;
+
+        // Player states for better error handling
+        protected enum PlayerState {
+            IDLE, PREPARING, READY, BUFFERING, ERROR, ENDED
+        }
+        protected PlayerState currentState = PlayerState.IDLE;
 
         public CameraView(Context context, Camera camera) {
             this.camera = camera;
@@ -348,15 +358,38 @@ public class SurveillanceFragment extends Fragment {
             exoPlayer.addListener(new Player.Listener() {
                 @Override
                 public void onPlaybackStateChanged(int state) {
+                    updatePlayerState(state);
                     isPlayerReady = (state == Player.STATE_READY);
-                    Log.d(TAG, "Player state changed: " + state + " for camera: " + camera.getName());
+
+                    String stateStr = getStateString(state);
+                    Log.d(TAG, "Player state changed to " + stateStr + " for camera: " + camera.getName());
+
+                    // Reset retry count on successful ready state
+                    if (state == Player.STATE_READY) {
+                        retryCount = 0;
+                        currentState = PlayerState.READY;
+                    } else if (state == Player.STATE_BUFFERING) {
+                        currentState = PlayerState.BUFFERING;
+                    } else if (state == Player.STATE_ENDED) {
+                        currentState = PlayerState.ENDED;
+                        // Automatically restart if stream ends unexpectedly
+                        scheduleRestart();
+                    }
                 }
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    Log.e(TAG, "ExoPlayer error for camera " + camera.getName() + ": " + error.getMessage());
-                    // Attempt to restart playback after error
-                    restartPlayback();
+                    currentState = PlayerState.ERROR;
+                    Log.e(TAG, "ExoPlayer error for camera " + camera.getName() +
+                          " (attempt " + (retryCount + 1) + "/" + MAX_RETRY_ATTEMPTS + "): " +
+                          error.getMessage());
+
+                    // Attempt to restart playback after error with retry limit
+                    if (retryCount < MAX_RETRY_ATTEMPTS && !isDestroyed) {
+                        scheduleRestart();
+                    } else {
+                        Log.e(TAG, "Max retry attempts reached for camera: " + camera.getName());
+                    }
                 }
             });
 
@@ -390,15 +423,69 @@ public class SurveillanceFragment extends Fragment {
         }
 
         /**
+         * Schedules a restart with delay to avoid rapid retry loops.
+         */
+        private void scheduleRestart() {
+            if (isDestroyed) return;
+
+            retryCount++;
+            Log.d(TAG, "Scheduling restart for camera: " + camera.getName() +
+                  " (attempt " + retryCount + "/" + MAX_RETRY_ATTEMPTS + ")");
+
+            // Use handler to delay restart
+            surfaceView.postDelayed(this::restartPlayback, RETRY_DELAY_MS);
+        }
+
+        /**
          * Restarts playback after an error or connection issue.
          */
         private void restartPlayback() {
-            if (exoPlayer != null) {
+            if (exoPlayer != null && !isDestroyed) {
                 Log.d(TAG, "Restarting playback for camera: " + camera.getName());
-                exoPlayer.stop();
-                exoPlayer.setMediaSource(mediaSource);
-                exoPlayer.prepare();
-                exoPlayer.setPlayWhenReady(true);
+                currentState = PlayerState.PREPARING;
+
+                try {
+                    exoPlayer.stop();
+                    exoPlayer.setMediaSource(mediaSource);
+                    exoPlayer.prepare();
+                    exoPlayer.setPlayWhenReady(true);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error during restart for camera " + camera.getName() + ": " + e.getMessage());
+                    currentState = PlayerState.ERROR;
+                }
+            }
+        }
+
+        /**
+         * Updates internal player state tracking.
+         */
+        private void updatePlayerState(int exoPlayerState) {
+            switch (exoPlayerState) {
+                case Player.STATE_IDLE:
+                    currentState = PlayerState.IDLE;
+                    break;
+                case Player.STATE_BUFFERING:
+                    currentState = PlayerState.BUFFERING;
+                    break;
+                case Player.STATE_READY:
+                    currentState = PlayerState.READY;
+                    break;
+                case Player.STATE_ENDED:
+                    currentState = PlayerState.ENDED;
+                    break;
+            }
+        }
+
+        /**
+         * Converts ExoPlayer state to readable string.
+         */
+        private String getStateString(int state) {
+            switch (state) {
+                case Player.STATE_IDLE: return "IDLE";
+                case Player.STATE_BUFFERING: return "BUFFERING";
+                case Player.STATE_READY: return "READY";
+                case Player.STATE_ENDED: return "ENDED";
+                default: return "UNKNOWN";
             }
         }
 
@@ -406,16 +493,41 @@ public class SurveillanceFragment extends Fragment {
          * Destroys the object and frees the memory
          */
         public void destroy() {
-            if (exoPlayer == null) {
+            if (isDestroyed || exoPlayer == null) {
                 Log.e(TAG, this.toString() + " already destroyed");
                 return;
             }
 
             Log.d(TAG, "Destroying camera view for: " + camera.getName());
-            exoPlayer.stop();
-            exoPlayer.release();
-            exoPlayer = null;
-            mediaSource = null;
+            isDestroyed = true;
+            currentState = PlayerState.IDLE;
+
+            // Cancel any pending restart operations
+            surfaceView.removeCallbacks(this::restartPlayback);
+
+            try {
+                exoPlayer.stop();
+                exoPlayer.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error during player cleanup for " + camera.getName() + ": " + e.getMessage());
+            } finally {
+                exoPlayer = null;
+                mediaSource = null;
+            }
+        }
+
+        /**
+         * Gets current connection status for monitoring.
+         */
+        public boolean isConnected() {
+            return currentState == PlayerState.READY && isPlayerReady;
+        }
+
+        /**
+         * Gets current player state for debugging.
+         */
+        public PlayerState getCurrentState() {
+            return currentState;
         }
     }
 }
