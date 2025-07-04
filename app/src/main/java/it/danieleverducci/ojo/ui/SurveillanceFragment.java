@@ -30,6 +30,9 @@ import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.rtsp.RtspMediaSource;
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
+import com.google.android.exoplayer2.DefaultLoadControl;
+import com.google.android.exoplayer2.DefaultRenderersFactory;
+import com.google.android.exoplayer2.LoadControl;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,6 +43,7 @@ import it.danieleverducci.ojo.Settings;
 import it.danieleverducci.ojo.databinding.FragmentSurveillanceBinding;
 import it.danieleverducci.ojo.entities.Camera;
 import it.danieleverducci.ojo.utils.DpiUtils;
+import it.danieleverducci.ojo.utils.PerformanceMonitor;
 
 /**
  * Some streams to test:
@@ -56,12 +60,19 @@ public class SurveillanceFragment extends Fragment {
     private static final int MAX_RETRY_ATTEMPTS = 3;   // Maximum retry attempts on error
     private static final long RETRY_DELAY_MS = 5000;   // Delay between retry attempts
 
+    // Performance optimization constants
+    private static final int MAX_CONCURRENT_STREAMS = 4; // Limit concurrent streams for performance
+    private static final long BUFFER_SIZE_MS = 3000;     // 3 seconds buffer
+    private static final long MIN_BUFFER_MS = 1000;      // 1 second minimum buffer
+    private static final boolean ENABLE_HARDWARE_ACCELERATION = true; // Use hardware decoding when available
+
     private FragmentSurveillanceBinding binding;
     private List<CameraView> cameraViews = new ArrayList<>();
     private boolean fullscreenCameraView = false;
     private LinearLayout.LayoutParams cameraViewLayoutParams;
     private LinearLayout.LayoutParams rowLayoutParams;
     private LinearLayout.LayoutParams hiddenLayoutParams;
+    private PerformanceMonitor performanceMonitor;
 
     @Override
     public View onCreateView(
@@ -92,6 +103,11 @@ public class SurveillanceFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
+
+        // Initialize performance monitoring
+        performanceMonitor = PerformanceMonitor.getInstance(getContext());
+        performanceMonitor.startTiming(PerformanceMonitor.Metrics.STREAM_START_TIME);
+        performanceMonitor.logMemoryUsage("onResume");
 
         leanbackMode(true);
 
@@ -155,12 +171,24 @@ public class SurveillanceFragment extends Fragment {
         }
 
         disposeAllCameras();
+
+        // Log performance metrics and cleanup
+        if (performanceMonitor != null) {
+            performanceMonitor.logMemoryUsage("onPause");
+            performanceMonitor.generatePerformanceReport();
+        }
     }
 
 
     private void addAllCameras() {
         Settings settings = Settings.fromDisk(getContext());
         List<Camera> cc = settings.getCameras();
+
+        // Limit concurrent streams for performance
+        if (cc.size() > MAX_CONCURRENT_STREAMS) {
+            Log.w(TAG, "Too many cameras (" + cc.size() + "), limiting to " + MAX_CONCURRENT_STREAMS + " for performance");
+            cc = cc.subList(0, MAX_CONCURRENT_STREAMS);
+        }
 
         int[] gridSize = calcGridDimensionsBasedOnNumberOfElements(cc.size());
         int camIdx = 0;
@@ -326,6 +354,11 @@ public class SurveillanceFragment extends Fragment {
         public CameraView(Context context, Camera camera) {
             this.camera = camera;
 
+            // Start performance monitoring for camera initialization
+            if (performanceMonitor != null) {
+                performanceMonitor.startTiming(PerformanceMonitor.Metrics.CAMERA_INIT_TIME + "_" + camera.getName());
+            }
+
             // Create SurfaceView for video rendering
             surfaceView = new SurfaceView(context);
             surfaceView.setOnClickListener(new View.OnClickListener() {
@@ -340,8 +373,11 @@ public class SurveillanceFragment extends Fragment {
             SurfaceHolder holder = surfaceView.getHolder();
             holder.setKeepScreenOn(true);
 
-            // Create ExoPlayer instance
-            exoPlayer = new ExoPlayer.Builder(context).build();
+            // Create ExoPlayer instance with performance optimizations
+            exoPlayer = new ExoPlayer.Builder(context)
+                    .setLoadControl(createOptimizedLoadControl())
+                    .setRenderersFactory(createOptimizedRenderersFactory(context))
+                    .build();
 
             // Set video surface
             exoPlayer.setVideoSurfaceView(surfaceView);
@@ -368,6 +404,13 @@ public class SurveillanceFragment extends Fragment {
                     if (state == Player.STATE_READY) {
                         retryCount = 0;
                         currentState = PlayerState.READY;
+
+                        // Log successful connection
+                        if (performanceMonitor != null) {
+                            performanceMonitor.incrementCounter(PerformanceMonitor.Metrics.SUCCESSFUL_CONNECTIONS);
+                            performanceMonitor.endTiming(PerformanceMonitor.Metrics.CAMERA_INIT_TIME + "_" + camera.getName());
+                            performanceMonitor.logPlayerPerformance(camera.getName(), "ready_state_reached", System.currentTimeMillis());
+                        }
                     } else if (state == Player.STATE_BUFFERING) {
                         currentState = PlayerState.BUFFERING;
                     } else if (state == Player.STATE_ENDED) {
@@ -383,6 +426,13 @@ public class SurveillanceFragment extends Fragment {
                     Log.e(TAG, "ExoPlayer error for camera " + camera.getName() +
                           " (attempt " + (retryCount + 1) + "/" + MAX_RETRY_ATTEMPTS + "): " +
                           error.getMessage());
+
+                    // Log error metrics
+                    if (performanceMonitor != null) {
+                        performanceMonitor.incrementCounter(PerformanceMonitor.Metrics.ERROR_COUNT);
+                        performanceMonitor.incrementCounter(PerformanceMonitor.Metrics.FAILED_CONNECTIONS);
+                        performanceMonitor.logPlayerPerformance(camera.getName(), "error_occurred", error.errorCode);
+                    }
 
                     // Attempt to restart playback after error with retry limit
                     if (retryCount < MAX_RETRY_ATTEMPTS && !isDestroyed) {
@@ -528,6 +578,38 @@ public class SurveillanceFragment extends Fragment {
          */
         public PlayerState getCurrentState() {
             return currentState;
+        }
+
+        /**
+         * Creates optimized LoadControl for better performance and memory usage.
+         */
+        private LoadControl createOptimizedLoadControl() {
+            return new DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(
+                            (int) MIN_BUFFER_MS,     // Min buffer before playback starts
+                            (int) BUFFER_SIZE_MS,    // Max buffer size
+                            (int) MIN_BUFFER_MS,     // Buffer for playback after rebuffer
+                            (int) MIN_BUFFER_MS      // Buffer for playback after rebuffer
+                    )
+                    .setPrioritizeTimeOverSizeThresholds(true) // Prioritize time over size
+                    .build();
+        }
+
+        /**
+         * Creates optimized RenderersFactory for hardware acceleration.
+         */
+        private DefaultRenderersFactory createOptimizedRenderersFactory(Context context) {
+            DefaultRenderersFactory factory = new DefaultRenderersFactory(context);
+
+            if (ENABLE_HARDWARE_ACCELERATION) {
+                // Enable hardware acceleration when available
+                factory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
+            } else {
+                // Use software rendering only
+                factory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF);
+            }
+
+            return factory;
         }
     }
 }
