@@ -201,27 +201,28 @@ MainActivity (入口Activity)
 
 ## 6. 视频播放架构
 
-### 6.1 VLC集成架构
+### 6.1 ExoPlayer集成架构 (替代VLC)
 ```java
-VLC播放流程:
-1. LibVLC初始化 (带VLC_OPTIONS配置)
-2. MediaPlayer创建
+ExoPlayer播放流程:
+1. ExoPlayer.Builder配置 (LoadControl + RenderersFactory)
+2. ExoPlayer实例创建
 3. SurfaceView设置
-4. IVLCVout视频输出配置
-5. Media对象创建 (RTSP URL)
-6. 播放启动
+4. RtspMediaSource创建
+5. MediaItem配置 (RTSP URL)
+6. 播放准备和启动
 7. 资源释放 (destroy方法)
 ```
 
-### 6.2 VLC配置参数
+### 6.2 ExoPlayer配置参数
 ```java
-VLC_OPTIONS = {
-    "--aout=opensles",           // 音频输出
-    "--avcodec-codec=h264",      // 视频编解码器
-    // "--audio-time-stretch",   // 时间拉伸 (已注释)
-    // "-vvv",                   // 详细日志 (已注释)
-    // "--file-logging",         // 文件日志 (已注释)
-}
+// 性能优化配置
+RTSP_TIMEOUT_MS = 10000;         // RTSP超时
+MAX_RETRY_ATTEMPTS = 3;          // 最大重试次数
+RETRY_DELAY_MS = 5000;           // 重试延迟
+MAX_CONCURRENT_STREAMS = 4;      // 最大并发流
+BUFFER_SIZE_MS = 3000;           // 缓冲区大小
+MIN_BUFFER_MS = 1000;            // 最小缓冲
+ENABLE_HARDWARE_ACCELERATION = true; // 硬件加速
 ```
 
 ## 7. Android特性集成
