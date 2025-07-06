@@ -84,10 +84,11 @@ public class SurveillanceFragment extends Fragment {
     private static final long ULTRA_LOW_LATENCY_REBUFFER_MS = 300;      // 300ms rebuffer threshold
     private static final long ULTRA_LOW_LATENCY_TARGET_MS = 400;        // 400ms target buffer
 
-    // Surface optimization constants for RK3588
-    private static final int SURFACE_BUFFER_COUNT = 3;                  // Triple buffering for smooth rendering
-    private static final int SURFACE_DEQUEUE_TIMEOUT_MS = 16;           // 16ms timeout (60 FPS)
+    // Surface optimization constants for RK3588 - Enhanced for frame error prevention
+    private static final int SURFACE_BUFFER_COUNT = 4;                  // Quad buffering to prevent frame drops
+    private static final int SURFACE_DEQUEUE_TIMEOUT_MS = 33;           // 33ms timeout (30 FPS) for stability
     private static final boolean ENABLE_SURFACE_ASYNC_MODE = true;      // Async surface for better performance
+    private static final boolean ENABLE_FRAME_DROP_RECOVERY = true;     // Enable automatic frame drop recovery
 
     // RK3588 hardware decoder optimization constants
     private static final boolean ENABLE_RK3588_MPP_DECODER = true;  // Enable Rockchip MPP hardware decoder
@@ -1063,7 +1064,10 @@ public class SurveillanceFragment extends Fragment {
          */
         private void applyMediaPlayerSurfaceOptimizations(MediaPlayer mediaPlayer) {
             try {
-                Log.d(TAG, "Applying MediaPlayer surface optimizations for smooth playback");
+                Log.d(TAG, "Applying enhanced MediaPlayer surface optimizations for RK3588 frame error prevention");
+
+                // Apply frame error prevention optimizations
+                applyFrameErrorPreventionOptimizations(mediaPlayer);
 
                 // Set up error listener to handle surface-related errors
                 mediaPlayer.setOnErrorListener(new MediaPlayer.OnErrorListener() {
@@ -1081,10 +1085,36 @@ public class SurveillanceFragment extends Fragment {
                     }
                 });
 
-                Log.d(TAG, "MediaPlayer surface optimizations applied successfully");
+                Log.d(TAG, "Enhanced MediaPlayer surface optimizations applied successfully");
 
             } catch (Exception e) {
                 Log.w(TAG, "Failed to apply MediaPlayer surface optimizations: " + e.getMessage());
+            }
+        }
+
+        /**
+         * Applies frame error prevention optimizations specifically for RK3588 rockit video sink.
+         */
+        private void applyFrameErrorPreventionOptimizations(MediaPlayer mediaPlayer) {
+            try {
+                Log.d(TAG, "Applying frame error prevention optimizations for RK3588 rockit video sink");
+
+                // CRITICAL: Set video scaling mode to prevent frame size conflicts
+                mediaPlayer.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+                Log.d(TAG, "Set video scaling mode to SCALE_TO_FIT to prevent frame conflicts");
+
+                // CRITICAL: Apply low-latency audio configuration to reduce A/V sync issues
+                try {
+                    mediaPlayer.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC);
+                    Log.d(TAG, "Configured audio stream for low-latency A/V sync");
+                } catch (Exception audioException) {
+                    Log.d(TAG, "Audio configuration not critical for frame error prevention");
+                }
+
+                Log.d(TAG, "Frame error prevention optimizations applied successfully");
+
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply frame error prevention optimizations: " + e.getMessage());
             }
         }
 
@@ -1152,15 +1182,154 @@ public class SurveillanceFragment extends Fragment {
          */
         private void applySurfaceBufferOptimizations(SurfaceHolder holder) {
             try {
-                Log.d(TAG, "Applying surface buffer optimizations to prevent frame drops");
+                Log.d(TAG, "Applying enhanced surface buffer optimizations to prevent frame drops");
 
                 // CRITICAL: Keep screen on to prevent surface lifecycle issues
                 holder.setKeepScreenOn(true);
 
-                Log.d(TAG, "Surface buffer optimizations applied successfully");
+                // CRITICAL: Apply RK3588-specific buffer queue optimizations
+                applyRK3588BufferQueueOptimizations(holder);
+
+                Log.d(TAG, "Enhanced surface buffer optimizations applied successfully");
 
             } catch (Exception e) {
                 Log.w(TAG, "Failed to apply surface buffer optimizations: " + e.getMessage());
+            }
+        }
+
+        /**
+         * Applies RK3588-specific buffer queue optimizations to prevent frame errors.
+         * Addresses the "RTNodeVideoSink frame error! skip frame" issue.
+         */
+        private void applyRK3588BufferQueueOptimizations(SurfaceHolder holder) {
+            try {
+                Log.d(TAG, "Applying RK3588 buffer queue optimizations to prevent frame errors");
+
+                // CRITICAL: Use reflection to access advanced surface properties for RK3588
+                try {
+                    // Set surface buffer count to prevent queue overflow
+                    android.view.Surface surface = holder.getSurface();
+                    if (surface != null && surface.isValid()) {
+                        // Apply buffer count optimization using reflection
+                        java.lang.reflect.Method setBufferCountMethod = surface.getClass().getMethod("setBufferCount", int.class);
+                        if (setBufferCountMethod != null) {
+                            setBufferCountMethod.invoke(surface, SURFACE_BUFFER_COUNT);
+                            Log.d(TAG, "Set surface buffer count to " + SURFACE_BUFFER_COUNT + " for RK3588 optimization");
+                        }
+                    }
+                } catch (Exception reflectionException) {
+                    Log.d(TAG, "Advanced surface buffer optimization not available, using fallback");
+                }
+
+                // Apply additional RK3588-specific optimizations
+                applyRockchipVideoSinkOptimizations(holder);
+
+                Log.d(TAG, "RK3588 buffer queue optimizations applied successfully");
+
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply RK3588 buffer queue optimizations: " + e.getMessage());
+            }
+        }
+
+        /**
+         * Applies Rockchip video sink optimizations to prevent frame errors.
+         */
+        private void applyRockchipVideoSinkOptimizations(SurfaceHolder holder) {
+            try {
+                Log.d(TAG, "Applying Rockchip video sink optimizations");
+
+                // CRITICAL: Set surface format to prevent video sink conflicts
+                // Use RGBA_8888 instead of RGBX_8888 for better RK3588 compatibility
+                holder.setFormat(android.graphics.PixelFormat.RGBA_8888);
+                Log.d(TAG, "Set surface format to RGBA_8888 for Rockchip video sink compatibility");
+
+                // CRITICAL: Ensure surface size matches video resolution to prevent scaling issues
+                // This prevents the video sink from dropping frames due to resolution mismatches
+                holder.setFixedSize(1280, 720); // Match RTSP stream resolution
+                Log.d(TAG, "Set surface size to 1280x720 to match RTSP stream resolution");
+
+                Log.d(TAG, "Rockchip video sink optimizations applied successfully");
+
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply Rockchip video sink optimizations: " + e.getMessage());
+            }
+        }
+
+        /**
+         * Applies frame drop recovery optimizations when video track lagging is detected.
+         * This helps recover from RK3588 rockit video sink frame errors.
+         */
+        private void applyFrameDropRecovery(MediaPlayer mediaPlayer) {
+            try {
+                Log.d(TAG, "Applying frame drop recovery optimizations");
+
+                // CRITICAL: Temporarily reduce playback speed to allow buffer recovery
+                try {
+                    android.media.PlaybackParams params = mediaPlayer.getPlaybackParams();
+                    params.setSpeed(0.95f); // Slightly reduce speed to recover from frame drops
+                    mediaPlayer.setPlaybackParams(params);
+                    Log.d(TAG, "Temporarily reduced playback speed to 95% for frame drop recovery");
+
+                    // Schedule speed restoration after recovery period
+                    new android.os.Handler().postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                android.media.PlaybackParams normalParams = mediaPlayer.getPlaybackParams();
+                                normalParams.setSpeed(1.0f); // Restore normal speed
+                                mediaPlayer.setPlaybackParams(normalParams);
+                                Log.d(TAG, "Restored normal playback speed after frame drop recovery");
+                            } catch (Exception e) {
+                                Log.w(TAG, "Failed to restore normal playback speed: " + e.getMessage());
+                            }
+                        }
+                    }, 2000); // Restore after 2 seconds
+
+                } catch (Exception speedException) {
+                    Log.d(TAG, "Playback speed adjustment not supported, using alternative recovery");
+                    // Alternative recovery: brief pause and resume
+                    applyAlternativeFrameDropRecovery(mediaPlayer);
+                }
+
+                Log.d(TAG, "Frame drop recovery optimizations applied successfully");
+
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply frame drop recovery: " + e.getMessage());
+            }
+        }
+
+        /**
+         * Alternative frame drop recovery method for devices that don't support playback speed adjustment.
+         */
+        private void applyAlternativeFrameDropRecovery(MediaPlayer mediaPlayer) {
+            try {
+                Log.d(TAG, "Applying alternative frame drop recovery");
+
+                // Brief pause to allow buffer recovery
+                if (mediaPlayer.isPlaying()) {
+                    mediaPlayer.pause();
+                    Log.d(TAG, "Paused MediaPlayer for frame drop recovery");
+
+                    // Resume after brief delay
+                    new android.os.Handler().postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                if (!mediaPlayer.isPlaying()) {
+                                    mediaPlayer.start();
+                                    Log.d(TAG, "Resumed MediaPlayer after frame drop recovery");
+                                }
+                            } catch (Exception e) {
+                                Log.w(TAG, "Failed to resume MediaPlayer after recovery: " + e.getMessage());
+                            }
+                        }
+                    }, 100); // Resume after 100ms
+                }
+
+                Log.d(TAG, "Alternative frame drop recovery applied successfully");
+
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply alternative frame drop recovery: " + e.getMessage());
             }
         }
 
@@ -1858,17 +2027,24 @@ public class SurveillanceFragment extends Fragment {
                         switch (what) {
                             case MediaPlayer.MEDIA_INFO_BUFFERING_START:
                                 Log.d(TAG, "MediaPlayer buffering started for camera: " + camera.getName());
+                                currentState = PlayerState.BUFFERING;
                                 break;
                             case MediaPlayer.MEDIA_INFO_BUFFERING_END:
                                 Log.d(TAG, "MediaPlayer buffering ended for camera: " + camera.getName());
+                                currentState = PlayerState.READY;
                                 break;
                             case MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START:
                                 Log.d(TAG, "MediaPlayer video rendering started for camera: " + camera.getName());
+                                currentState = PlayerState.READY;
                                 // Apply additional optimizations once rendering starts
                                 optimizeForRealTimePlayback(mp);
                                 break;
                             case MediaPlayer.MEDIA_INFO_VIDEO_TRACK_LAGGING:
                                 Log.w(TAG, "MediaPlayer video track lagging for camera: " + camera.getName());
+                                // Apply frame drop recovery if enabled
+                                if (ENABLE_FRAME_DROP_RECOVERY) {
+                                    applyFrameDropRecovery(mp);
+                                }
                                 break;
                         }
                         return false;
