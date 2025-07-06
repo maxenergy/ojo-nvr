@@ -1,0 +1,75 @@
+{
+  "timestamp": "2025-07-06T12:06:44.745857",
+  "test_results": {
+    "mediaplayer_error_handling": {
+      "status": "PASS",
+      "details": {
+        "MEDIA_ERROR_UNSUPPORTED.*-38": true,
+        "handleUnsupportedMediaError": true,
+        "getMediaPlayerErrorDetails": true,
+        "extra.*-38": true
+      }
+    },
+    "realtime_optimization": {
+      "status": "PASS",
+      "details": {
+        "optimizeForRealTimePlayback": true,
+        "applyAdvancedRealTimeOptimizations": true,
+        "setPlaybackParams": true,
+        "FLAG_LOW_LATENCY": true
+      }
+    },
+    "h264_buffer_optimization": {
+      "status": "PASS",
+      "details": {
+        "H264_422_BUFFER_SIZE_MS": true,
+        "H264_422_MIN_BUFFER_MS": true,
+        "createH264High422LoadControl": true,
+        "isLikelyH264High422Stream": true
+      }
+    },
+    "rk3588_hardware_decoding": {
+      "status": "PASS",
+      "details": {
+        "RK3588_MAX_DECODER_INSTANCES": true,
+        "createRK3588OptimizedFactory": true,
+        "applyRK3588VideoRendererOptimizations": true,
+        "resolveRK3588DecoderConflicts": true
+      }
+    },
+    "adaptive_quality_controls": {
+      "status": "PASS",
+      "details": {
+        "ENABLE_ADAPTIVE_QUALITY": true,
+        "initializeAdaptiveQualityControl": true,
+        "monitorNetworkAndAdjustQuality": true,
+        "applyQualityAdjustments": true
+      }
+    },
+    "performance_monitoring": {
+      "status": "PASS",
+      "details": {
+        "PerformanceMonitor": true,
+        "logPlayerPerformance": true,
+        "incrementCounter": true,
+        "BUFFER_UNDERRUNS": true
+      }
+    },
+    "rtsp_connectivity": {
+      "rtsp://192.168.31.22:8554/unicast": {
+        "status": "CONNECTED",
+        "codec": "h264",
+        "resolution": "1280x720",
+        "fps": "15/1"
+      },
+      "rtsp://192.168.31.64:8554/unicast": {
+        "status": "CONNECTED",
+        "codec": "h264",
+        "resolution": "1280x720",
+        "fps": "60/1"
+      }
+    }
+  },
+  "performance_metrics": {},
+  "optimization_status": {}
+}

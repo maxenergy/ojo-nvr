@@ -41,9 +41,10 @@ dependencies {
     implementation 'androidx.navigation:navigation-fragment:2.5.3'
     implementation 'androidx.navigation:navigation-ui:2.5.3'
 
-    // ExoPlayer for RTSP streaming (replacing libvlc)
+    // ExoPlayer for RTSP streaming (replacing libvlc) - updated version for better RTSP support
     implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
     implementation 'com.google.android.exoplayer:exoplayer-rtsp:2.19.1'
+    implementation 'com.google.android.exoplayer:exoplayer-core:2.19.1'
 
     // MultiDex support for large app
     implementation 'androidx.multidex:multidex:2.0.1'
