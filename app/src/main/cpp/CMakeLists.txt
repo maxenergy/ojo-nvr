@@ -1,7 +1,7 @@
 # CMakeLists.txt for Ojo Native Player
 # MPP + ZLMediaKit implementation for RK3588 platform
 
-cmake_minimum_required(VERSION 3.18.1)
+cmake_minimum_required(VERSION 3.22.1)
 
 project("ojo_native")
 
@@ -18,6 +18,20 @@ endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+# Android-specific flags to resolve MPP header conflicts
+if(ANDROID)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_STRUCT_TIMESPEC=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_TIMESPEC_DEFINED=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DPTW32_STATIC_LIB=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__CLEANUP_C=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DPTW32_LEVEL=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DPTW32_LEVEL_MAX=3")
+    # Disable problematic Windows-specific features
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__declspec\\(x\\)=")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DPTW32_DLLPORT=")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__cdecl=")
+endif()
 
 # Platform-specific settings for RK3588
 if(ANDROID_ABI STREQUAL "arm64-v8a")
@@ -37,19 +51,19 @@ set(OJO_NATIVE_SOURCES
     # Core utilities
     ojo_native/utils/ojo_types.h
     
-    # RTSP client
+    # RTSP client (native implementation)
     ojo_native/rtsp/ZLRTSPClient.h
     ojo_native/rtsp/ZLRTSPClient.cpp
     
-    # MPP decoder
+    # MPP decoder (hardware-accelerated decoding)
     ojo_native/decoder/MPPDecoder.h
     ojo_native/decoder/MPPDecoder.cpp
     
-    # Surface renderer
+    # Surface renderer (native surface rendering)
     ojo_native/renderer/NativeSurfaceRenderer.h
     ojo_native/renderer/NativeSurfaceRenderer.cpp
     
-    # JNI bridge
+    # JNI bridge (Android integration)
     ojo_native/jni/ojo_jni_bridge.h
     ojo_native/jni/ojo_jni_bridge.cpp
     
@@ -60,6 +74,8 @@ set(OJO_NATIVE_SOURCES
     ojo_native/utils/memory_pool.cpp
     ojo_native/utils/performance_monitor.h
     ojo_native/utils/performance_monitor.cpp
+    ojo_native/utils/rga_utils.h
+    ojo_native/utils/rga_utils.cpp
 )
 
 # Include directories
@@ -80,10 +96,12 @@ if(EXISTS ${ZLMEDIAKIT_DIR})
     include_directories(${ZLMEDIAKIT_DIR}/include)
     link_directories(${ZLMEDIAKIT_DIR}/lib/${ANDROID_ABI})
     set(ZLMEDIAKIT_LIBS
+        mk_api
         zlmediakit
         zltoolkit
-        ssl
-        crypto
+        ext-codec
+        mpeg
+        jsoncpp
     )
     add_definitions(-DHAVE_ZLMEDIAKIT)
 else()
@@ -93,13 +111,18 @@ endif()
 
 # Rockchip MPP configuration
 if(EXISTS ${MPP_DIR})
-    include_directories(${MPP_DIR}/include)
+    # Include the lib directory for linking
     link_directories(${MPP_DIR}/lib/${ANDROID_ABI})
-    set(MPP_LIBS
-        rockchip_mpp
-        rockchip_vpu
+
+    # Import the shared library
+    add_library(rockchip_mpp SHARED IMPORTED)
+    set_target_properties(rockchip_mpp PROPERTIES
+        IMPORTED_LOCATION ${MPP_DIR}/lib/${ANDROID_ABI}/librockchip_mpp.so
     )
+
+    set(MPP_LIBS rockchip_mpp)
     add_definitions(-DHAVE_ROCKCHIP_MPP)
+    message(STATUS "Using MPP shared library: ${MPP_DIR}/lib/${ANDROID_ABI}/librockchip_mpp.so")
 else()
     message(WARNING "Rockchip MPP not found, using placeholder implementation")
     set(MPP_LIBS "")
@@ -108,14 +131,17 @@ endif()
 # RGA configuration
 if(EXISTS ${RGA_DIR})
     include_directories(${RGA_DIR}/include)
-    link_directories(${RGA_DIR}/lib/${ANDROID_ABI})
+    link_directories(${RGA_DIR}/libs/${ANDROID_ABI})
     set(RGA_LIBS
         rga
     )
+    set(HAVE_RGA TRUE)
     add_definitions(-DHAVE_RGA)
+    message(STATUS "Using RGA library: ${RGA_DIR}/libs/${ANDROID_ABI}/librga.so")
 else()
     message(WARNING "RGA not found, using software rendering")
     set(RGA_LIBS "")
+    set(HAVE_RGA FALSE)
 endif()
 
 # Create the native library
@@ -128,12 +154,11 @@ target_link_libraries(ojo_native
     ${android-lib}
     
     # Third-party libraries
-    ${ZLMEDIAKIT_LIBS}
+    # ${ZLMEDIAKIT_LIBS}  # Temporarily disabled due to incompatible libraries
     ${MPP_LIBS}
     ${RGA_LIBS}
     
     # System libraries
-    pthread
     dl
     m
 )
@@ -152,10 +177,43 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     )
 endif()
 
+# Copy shared libraries to APK
+if(EXISTS ${MPP_DIR}/lib/${ANDROID_ABI}/librockchip_mpp.so)
+    # Copy the MPP shared library to the output directory so it gets packaged in APK
+    add_custom_command(TARGET ojo_native POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${MPP_DIR}/lib/${ANDROID_ABI}/librockchip_mpp.so
+        $<TARGET_FILE_DIR:ojo_native>/librockchip_mpp.so
+        COMMENT "Copying MPP shared library to output directory"
+    )
+
+    message(STATUS "MPP shared library will be packaged in APK")
+endif()
+
+# Copy RGA shared library to APK
+if(HAVE_RGA AND EXISTS ${RGA_DIR}/libs/${ANDROID_ABI}/librga.so)
+    # Copy the RGA shared library to the output directory so it gets packaged in APK
+    add_custom_command(TARGET ojo_native POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${RGA_DIR}/libs/${ANDROID_ABI}/librga.so
+        $<TARGET_FILE_DIR:ojo_native>/librga.so
+        COMMENT "Copying RGA shared library to output directory"
+    )
+
+    message(STATUS "RGA shared library will be packaged in APK")
+endif()
+
 # Installation
 install(TARGETS ojo_native
     LIBRARY DESTINATION lib/${ANDROID_ABI}
 )
+
+# Install MPP shared library if it exists
+if(EXISTS ${MPP_DIR}/lib/${ANDROID_ABI}/librockchip_mpp.so)
+    install(FILES ${MPP_DIR}/lib/${ANDROID_ABI}/librockchip_mpp.so
+        DESTINATION lib/${ANDROID_ABI}
+    )
+endif()
 
 # Custom targets for development
 

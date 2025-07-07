@@ -49,6 +49,7 @@ import it.danieleverducci.ojo.R;
 import it.danieleverducci.ojo.Settings;
 import it.danieleverducci.ojo.databinding.FragmentSurveillanceBinding;
 import it.danieleverducci.ojo.entities.Camera;
+import it.danieleverducci.ojo.native_player.OjoNativePlayer;
 import it.danieleverducci.ojo.utils.DpiUtils;
 import it.danieleverducci.ojo.utils.PerformanceMonitor;
 
@@ -405,6 +406,7 @@ public class SurveillanceFragment extends Fragment {
         protected SurfaceView surfaceView;
         protected ExoPlayer exoPlayer;
         protected MediaPlayer nativeMediaPlayer; // Fallback for problematic RTSP streams
+        protected OjoNativePlayer ojoNativePlayer; // Hardware-accelerated RTSP with MPP
         protected Camera camera;
         protected MediaSource mediaSource;
         protected boolean isPlayerReady = false;
@@ -412,6 +414,7 @@ public class SurveillanceFragment extends Fragment {
         protected boolean isDestroyed = false;
         protected PlayerState currentState = PlayerState.IDLE;
         protected boolean useNativePlayer = false; // Flag to switch to native player
+        protected boolean useOjoNativePlayer = false; // Flag to use Ojo native player
 
         // Adaptive quality control variables
         protected android.os.Handler networkMonitorHandler;
@@ -601,21 +604,43 @@ public class SurveillanceFragment extends Fragment {
                     // Show test pattern on error
                     drawTestPattern(surfaceView.getHolder());
 
-                    // Check if this is an SDP parsing error and try native MediaPlayer
+                    // Check if this is an SDP parsing error and try hardware-accelerated native player first
                     String errorMsg = error.getMessage();
                     String causeMsg = error.getCause() != null ? error.getCause().getMessage() : "";
 
                     Log.d(TAG, "Checking error for SDP parsing issue - Error: " + errorMsg + ", Cause: " + causeMsg);
 
-                    if ((errorMsg != null && (errorMsg.contains("Malformed SDP") ||
+                    // Check for SDP parsing errors and MediaCodec decoder failures
+                    boolean isSdpError = (errorMsg != null && (errorMsg.contains("Malformed SDP") ||
                         errorMsg.contains("sprop-parameter-sets") ||
                         errorMsg.contains("ParserException"))) ||
                         (causeMsg != null && (causeMsg.contains("Malformed SDP") ||
                         causeMsg.contains("sprop-parameter-sets") ||
-                        causeMsg.contains("ParserException")))) {
-                        Log.w(TAG, "SDP parsing error detected, switching to native MediaPlayer for RTSP");
-                        switchToNativeMediaPlayer();
-                        return; // Don't proceed with normal error handling
+                        causeMsg.contains("ParserException")));
+
+                    boolean isDecoderError = (errorMsg != null && (errorMsg.contains("MediaCodec") ||
+                        errorMsg.contains("Decoder init failed") || errorMsg.contains("MediaCodecRenderer"))) ||
+                        (causeMsg != null && (causeMsg.contains("MediaCodec") ||
+                        causeMsg.contains("Decoder init failed") || causeMsg.contains("IllegalArgumentException")));
+
+                    // Trigger fallback for SDP parsing errors, decoder failures, or max retries reached
+                    if (isSdpError || isDecoderError || retryCount >= MAX_RETRY_ATTEMPTS) {
+                        // Try Ojo Native Player first for best performance on RK3588
+                        if (!useOjoNativePlayer && !useNativePlayer) {
+                            if (isSdpError) {
+                                Log.w(TAG, "SDP parsing error detected, switching to Ojo Native Player for hardware acceleration");
+                            } else if (isDecoderError) {
+                                Log.w(TAG, "MediaCodec decoder error detected, switching to Ojo Native Player for hardware acceleration");
+                            } else {
+                                Log.w(TAG, "Max retry attempts reached, switching to Ojo Native Player for hardware acceleration");
+                            }
+                            switchToOjoNativePlayer();
+                            return; // Don't proceed with normal error handling
+                        } else if (!useNativePlayer) {
+                            Log.w(TAG, "Ojo Native Player failed, falling back to Android MediaPlayer");
+                            switchToNativeMediaPlayer();
+                            return; // Don't proceed with normal error handling
+                        }
                     }
 
                     // Log detailed error information
@@ -825,11 +850,18 @@ public class SurveillanceFragment extends Fragment {
                     nativeMediaPlayer.release();
                     nativeMediaPlayer = null;
                 }
+
+                if (ojoNativePlayer != null) {
+                    ojoNativePlayer.stopStream();
+                    ojoNativePlayer.destroyPlayer();
+                    ojoNativePlayer = null;
+                }
             } catch (Exception e) {
                 Log.e(TAG, "Error during player cleanup for " + camera.getName() + ": " + e.getMessage());
             } finally {
                 exoPlayer = null;
                 nativeMediaPlayer = null;
+                ojoNativePlayer = null;
                 mediaSource = null;
             }
         }
@@ -2065,6 +2097,102 @@ public class SurveillanceFragment extends Fragment {
         }
 
         /**
+         * Switches to Ojo Native Player with hardware-accelerated MPP decoding.
+         * This provides the best performance on RK3588 platform.
+         */
+        private void switchToOjoNativePlayer() {
+            if (isDestroyed || useOjoNativePlayer) {
+                Log.e(TAG, "Cannot switch to Ojo native player - already using or destroyed");
+                return;
+            }
+
+            Log.d(TAG, "Switching to Ojo Native Player for camera: " + camera.getName());
+            useOjoNativePlayer = true;
+
+            try {
+                // Stop and release existing players
+                if (exoPlayer != null) {
+                    exoPlayer.stop();
+                    exoPlayer.release();
+                    exoPlayer = null;
+                }
+                if (nativeMediaPlayer != null) {
+                    nativeMediaPlayer.stop();
+                    nativeMediaPlayer.release();
+                    nativeMediaPlayer = null;
+                }
+
+                // Create Ojo Native Player
+                ojoNativePlayer = new OjoNativePlayer();
+
+                // Set up player listener
+                ojoNativePlayer.setListener(new OjoNativePlayer.PlayerListener() {
+                    @Override
+                    public void onStateChanged(int state, String message) {
+                        Log.d(TAG, "Ojo Native Player state changed: " + state + " - " + message);
+
+                        switch (state) {
+                            case OjoNativePlayer.STATE_CONNECTING:
+                                currentState = PlayerState.PREPARING;
+                                break;
+                            case OjoNativePlayer.STATE_CONNECTED:
+                                currentState = PlayerState.READY;
+                                break;
+                            case OjoNativePlayer.STATE_PLAYING:
+                                currentState = PlayerState.READY;
+                                isPlayerReady = true;
+                                Log.d(TAG, "Ojo Native Player started successfully for camera: " + camera.getName());
+                                break;
+                            case OjoNativePlayer.STATE_ERROR:
+                                Log.e(TAG, "Ojo Native Player error: " + message + " - falling back to MediaPlayer");
+                                // Trigger MediaPlayer fallback
+                                switchToNativeMediaPlayer();
+                                break;
+                        }
+                    }
+
+                    @Override
+                    public void onError(int errorCode, String message) {
+                        Log.e(TAG, "Ojo Native Player error " + errorCode + ": " + message + " - falling back to MediaPlayer");
+                        // Trigger MediaPlayer fallback
+                        switchToNativeMediaPlayer();
+                    }
+
+                    @Override
+                    public void onStatistics(OjoNativePlayer.PlaybackStatistics stats) {
+                        // Log performance statistics
+                        Log.d(TAG, "Ojo Native Player stats - FPS: " + stats.currentFps +
+                              ", Frames: " + stats.framesReceived + "/" + stats.framesDecoded);
+                    }
+                });
+
+                // Create player with surface
+                if (ojoNativePlayer.createPlayer(surfaceView.getHolder().getSurface())) {
+                    // Start streaming
+                    if (ojoNativePlayer.startStream(camera.getRtspUrl())) {
+                        Log.d(TAG, "Ojo Native Player setup completed for camera: " + camera.getName());
+                        currentState = PlayerState.PREPARING;
+                    } else {
+                        Log.e(TAG, "Failed to start Ojo Native Player stream - falling back to MediaPlayer");
+                        // Trigger MediaPlayer fallback
+                        switchToNativeMediaPlayer();
+                        return;
+                    }
+                } else {
+                    Log.e(TAG, "Failed to create Ojo Native Player - falling back to MediaPlayer");
+                    // Trigger MediaPlayer fallback
+                    switchToNativeMediaPlayer();
+                    return;
+                }
+
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to setup Ojo Native Player: " + e.getMessage());
+                currentState = PlayerState.ERROR;
+                drawTestPattern(surfaceView.getHolder());
+            }
+        }
+
+        /**
          * Tries alternative RTSP configuration when SDP parsing fails.
          */
         private void tryAlternativeRtspConfiguration() {
@@ -2166,6 +2294,66 @@ public class SurveillanceFragment extends Fragment {
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Error drawing test pattern: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Test method to directly test Ojo Native Player with RTSP streams.
+     * This can be called to test the native implementation.
+     */
+    public void testOjoNativePlayer() {
+        Log.d(TAG, "Testing Ojo Native Player with test RTSP streams");
+
+        // Test URLs
+        String[] testUrls = {
+            "rtsp://192.168.31.22:8554/unicast",
+            "rtsp://192.168.31.64:8554/unicast"
+        };
+
+        for (String testUrl : testUrls) {
+            Log.d(TAG, "Testing Ojo Native Player with URL: " + testUrl);
+
+            OjoNativePlayer testPlayer = new OjoNativePlayer();
+            testPlayer.setListener(new OjoNativePlayer.PlayerListener() {
+                @Override
+                public void onStateChanged(int state, String message) {
+                    Log.d(TAG, "Test Player state: " + state + " - " + message);
+                }
+
+                @Override
+                public void onError(int errorCode, String message) {
+                    Log.e(TAG, "Test Player error " + errorCode + ": " + message);
+                }
+
+                @Override
+                public void onStatistics(OjoNativePlayer.PlaybackStatistics stats) {
+                    Log.d(TAG, "Test Player stats - FPS: " + stats.currentFps +
+                          ", Frames: " + stats.framesReceived);
+                }
+            });
+
+            // Create a test surface (you would normally use a real SurfaceView)
+            if (cameraViews.size() > 0) {
+                CameraView firstCamera = cameraViews.get(0);
+                if (firstCamera.surfaceView != null) {
+                    if (testPlayer.createPlayer(firstCamera.surfaceView.getHolder().getSurface())) {
+                        if (testPlayer.startStream(testUrl)) {
+                            Log.d(TAG, "Test stream started successfully for: " + testUrl);
+
+                            // Let it run for a few seconds, then stop
+                            new android.os.Handler().postDelayed(() -> {
+                                testPlayer.stopStream();
+                                testPlayer.destroyPlayer();
+                                Log.d(TAG, "Test completed for: " + testUrl);
+                            }, 5000);
+                        } else {
+                            Log.e(TAG, "Failed to start test stream for: " + testUrl);
+                        }
+                    } else {
+                        Log.e(TAG, "Failed to create test player for: " + testUrl);
+                    }
+                }
             }
         }
     }

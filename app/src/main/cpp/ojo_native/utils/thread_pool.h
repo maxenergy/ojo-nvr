@@ -9,6 +9,9 @@
 #include <future>
 #include <atomic>
 #include <condition_variable>
+#include <set>
+#include <map>
+#include <mutex>
 
 namespace ojo {
 
@@ -23,7 +26,7 @@ public:
     
     // Task submission
     template<typename F, typename... Args>
-    auto submit(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
+    auto submit(F&& f, Args&&... args) -> std::future<typename std::invoke_result<F, Args...>::type>;
     
     // Pool management
     void resize(size_t numThreads);
@@ -44,7 +47,30 @@ public:
         std::atomic<double> averageExecutionTime{0.0};
         std::atomic<size_t> peakQueueSize{0};
         std::atomic<size_t> activeThreads{0};
-        
+
+        // Copy constructor for atomic values
+        ThreadPoolStatistics() = default;
+        ThreadPoolStatistics(const ThreadPoolStatistics& other) {
+            tasksSubmitted.store(other.tasksSubmitted.load());
+            tasksCompleted.store(other.tasksCompleted.load());
+            tasksFailed.store(other.tasksFailed.load());
+            averageExecutionTime.store(other.averageExecutionTime.load());
+            peakQueueSize.store(other.peakQueueSize.load());
+            activeThreads.store(other.activeThreads.load());
+        }
+
+        ThreadPoolStatistics& operator=(const ThreadPoolStatistics& other) {
+            if (this != &other) {
+                tasksSubmitted.store(other.tasksSubmitted.load());
+                tasksCompleted.store(other.tasksCompleted.load());
+                tasksFailed.store(other.tasksFailed.load());
+                averageExecutionTime.store(other.averageExecutionTime.load());
+                peakQueueSize.store(other.peakQueueSize.load());
+                activeThreads.store(other.activeThreads.load());
+            }
+            return *this;
+        }
+
         void reset() {
             tasksSubmitted = 0;
             tasksCompleted = 0;
@@ -64,7 +90,7 @@ private:
     
     // Task queue
     std::queue<std::function<void()>> tasks_;
-    std::mutex tasksMutex_;
+    mutable std::mutex tasksMutex_;
     std::condition_variable condition_;
     
     // State management
@@ -97,8 +123,8 @@ public:
     
     // Task submission with priority
     template<typename F, typename... Args>
-    auto submitRTSPTask(TaskType type, int priority, F&& f, Args&&... args) 
-        -> std::future<typename std::result_of<F(Args...)>::type>;
+    auto submitRTSPTask(TaskType type, int priority, F&& f, Args&&... args)
+        -> std::future<typename std::invoke_result<F, Args...>::type>;
     
     // Stream-specific operations
     void setStreamPriority(int streamId, int priority);
@@ -116,7 +142,25 @@ public:
         std::map<int, uint64_t> streamTaskCounts;
         std::atomic<double> averageLatency{0.0};
         std::atomic<size_t> droppedTasks{0};
-        
+
+        // Copy constructor for atomic values
+        RTSPThreadPoolStatistics() = default;
+        RTSPThreadPoolStatistics(const RTSPThreadPoolStatistics& other)
+            : taskCounts(other.taskCounts), streamTaskCounts(other.streamTaskCounts) {
+            averageLatency.store(other.averageLatency.load());
+            droppedTasks.store(other.droppedTasks.load());
+        }
+
+        RTSPThreadPoolStatistics& operator=(const RTSPThreadPoolStatistics& other) {
+            if (this != &other) {
+                taskCounts = other.taskCounts;
+                streamTaskCounts = other.streamTaskCounts;
+                averageLatency.store(other.averageLatency.load());
+                droppedTasks.store(other.droppedTasks.load());
+            }
+            return *this;
+        }
+
         void reset() {
             taskCounts.clear();
             streamTaskCounts.clear();
@@ -149,13 +193,13 @@ private:
     
     // Priority queue for tasks
     std::priority_queue<PriorityTask> priorityTasks_;
-    std::mutex priorityMutex_;
+    mutable std::mutex priorityMutex_;
     std::condition_variable priorityCondition_;
     
     // Stream management
     std::map<int, int> streamPriorities_;
     std::set<int> pausedStreams_;
-    std::mutex streamMutex_;
+    mutable std::mutex streamMutex_;
     
     // Configuration
     size_t maxQueueSize_;
@@ -211,7 +255,7 @@ private:
     // Monitored pools
     std::map<std::string, ThreadPool*> threadPools_;
     std::map<std::string, RTSPStreamThreadPool*> rtspThreadPools_;
-    std::mutex poolsMutex_;
+    mutable std::mutex poolsMutex_;
     
     // Monitoring thread
     std::thread monitorThread_;
@@ -220,7 +264,7 @@ private:
     
     // Alert system
     AlertCallback alertCallback_;
-    std::mutex alertMutex_;
+    mutable std::mutex alertMutex_;
     
     // Internal methods
     void monitoringLoop();
@@ -236,8 +280,8 @@ private:
 
 // Template implementation for ThreadPool::submit
 template<typename F, typename... Args>
-auto ThreadPool::submit(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type> {
-    using return_type = typename std::result_of<F(Args...)>::type;
+auto ThreadPool::submit(F&& f, Args&&... args) -> std::future<typename std::invoke_result<F, Args...>::type> {
+    using return_type = typename std::invoke_result<F, Args...>::type;
     
     auto task = std::make_shared<std::packaged_task<return_type()>>(
         std::bind(std::forward<F>(f), std::forward<Args>(args)...)
@@ -270,10 +314,10 @@ auto ThreadPool::submit(F&& f, Args&&... args) -> std::future<typename std::resu
 
 // Template implementation for RTSPStreamThreadPool::submitRTSPTask
 template<typename F, typename... Args>
-auto RTSPStreamThreadPool::submitRTSPTask(TaskType type, int priority, F&& f, Args&&... args) 
-    -> std::future<typename std::result_of<F(Args...)>::type> {
-    
-    using return_type = typename std::result_of<F(Args...)>::type;
+auto RTSPStreamThreadPool::submitRTSPTask(TaskType type, int priority, F&& f, Args&&... args)
+    -> std::future<typename std::invoke_result<F, Args...>::type> {
+
+    using return_type = typename std::invoke_result<F, Args...>::type;
     
     auto task = std::make_shared<std::packaged_task<return_type()>>(
         std::bind(std::forward<F>(f), std::forward<Args>(args)...)

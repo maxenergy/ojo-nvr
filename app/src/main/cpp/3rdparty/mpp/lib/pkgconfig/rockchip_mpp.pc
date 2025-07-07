@@ -1,0 +1,10 @@
+prefix=/home/rogers/source/rockchip/aibox_android/ojo/app/src/main/cpp/3rdparty/mpp
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: rockchip_mpp
+Description: Rockchip Media Process Platform
+Version: 1.0.0
+Libs: -L${libdir} -lrockchip_mpp
+Cflags: -I${includedir}

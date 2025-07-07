@@ -1,6 +1,25 @@
 #ifndef OJO_TYPES_H
 #define OJO_TYPES_H
 
+// Header conflict prevention for RockChip MPP on Android
+#ifdef __ANDROID__
+// Prevent MPP from redefining standard types that conflict with Android NDK
+#define HAVE_STRUCT_TIMESPEC 1
+#define _TIMESPEC_DEFINED 1
+#define PTW32_STATIC_LIB 1
+#define __CLEANUP_C 1
+// Disable Windows-specific __declspec attributes
+#ifdef __declspec
+#undef __declspec
+#endif
+#define __declspec(x)
+// Prevent pthread redefinitions
+#define PTW32_LEVEL 1
+#define PTW32_LEVEL_MAX 3
+#endif
+
+// Standard includes
+#include <cstdint>
 #include <memory>
 #include <vector>
 #include <string>
@@ -9,11 +28,13 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <map>
+#include <unordered_map>
 
 namespace ojo {
 
 // Forward declarations
-class VideoFrame;
+struct VideoFrame;
 class RTSPClient;
 class MPPDecoder;
 class NativeRenderer;
@@ -22,12 +43,15 @@ class NativeRenderer;
 enum class OjoError {
     SUCCESS = 0,
     INVALID_PARAMETER,
+    INVALID_STATE,
     INITIALIZATION_FAILED,
     CONNECTION_FAILED,
     DECODE_FAILED,
     RENDER_FAILED,
     OUT_OF_MEMORY,
     TIMEOUT,
+    HARDWARE_NOT_AVAILABLE,
+    HARDWARE_ERROR,
     UNKNOWN_ERROR
 };
 
@@ -46,9 +70,11 @@ enum class StreamState {
 enum class VideoFormat {
     UNKNOWN = 0,
     YUV420P,
+    I420,        // Same as YUV420P
     NV12,
     NV21,
     RGB24,
+    BGR24,
     RGBA32
 };
 
@@ -151,8 +177,21 @@ struct StreamConfig {
         , maxRetryAttempts(3) {}
 };
 
-// Performance statistics
+// Performance statistics (non-atomic for return values)
 struct StreamStatistics {
+    uint64_t framesReceived{0};
+    uint64_t framesDecoded{0};
+    uint64_t framesRendered{0};
+    uint64_t framesDropped{0};
+    uint64_t bytesReceived{0};
+    double currentFps{0.0};
+    double averageFps{0.0};
+    int64_t lastFrameTimestamp{0};
+    uint32_t connectionRetries{0};
+};
+
+// Atomic stream statistics for internal use
+struct AtomicStreamStatistics {
     std::atomic<uint64_t> framesReceived{0};
     std::atomic<uint64_t> framesDecoded{0};
     std::atomic<uint64_t> framesRendered{0};
@@ -161,8 +200,8 @@ struct StreamStatistics {
     std::atomic<double> currentFps{0.0};
     std::atomic<double> averageFps{0.0};
     std::atomic<int64_t> lastFrameTimestamp{0};
-    std::atomic<int> connectionRetries{0};
-    
+    std::atomic<uint32_t> connectionRetries{0};
+
     void reset() {
         framesReceived = 0;
         framesDecoded = 0;
@@ -176,11 +215,29 @@ struct StreamStatistics {
     }
 };
 
+// Decoder statistics (non-atomic for return values)
+struct DecoderStatistics {
+    uint64_t framesDecoded{0};
+    uint64_t framesFailed{0};
+    uint64_t bytesProcessed{0};
+    double averageDecodeTime{0.0};
+    int queuedFrames{0};
+    bool hardwareAccelerated{false};
+};
+
+// Renderer statistics (non-atomic for return values)
+struct RendererStatistics {
+    uint64_t framesRendered{0};
+    uint64_t framesDropped{0};
+    double averageRenderTime{0.0};
+    double currentFps{0.0};
+};
+
 // Callback function types
-using FrameCallback = std::function<void(std::shared_ptr<VideoFrame>)>;
-using StateCallback = std::function<void(StreamState, const std::string&)>;
-using ErrorCallback = std::function<void(OjoError, const std::string&)>;
-using StatisticsCallback = std::function<void(const StreamStatistics&)>;
+using FrameCallback = std::function<void(std::shared_ptr<ojo::VideoFrame>)>;
+using StateCallback = std::function<void(ojo::StreamState, const std::string&)>;
+using ErrorCallback = std::function<void(ojo::OjoError, const std::string&)>;
+using StatisticsCallback = std::function<void(const ojo::StreamStatistics&)>;
 
 // Thread-safe queue template
 template<typename T>
@@ -240,32 +297,73 @@ public:
 };
 
 // Utility functions
-inline const char* errorToString(OjoError error) {
+inline const char* errorToString(ojo::OjoError error) {
     switch (error) {
-        case OjoError::SUCCESS: return "Success";
-        case OjoError::INVALID_PARAMETER: return "Invalid parameter";
-        case OjoError::INITIALIZATION_FAILED: return "Initialization failed";
-        case OjoError::CONNECTION_FAILED: return "Connection failed";
-        case OjoError::DECODE_FAILED: return "Decode failed";
-        case OjoError::RENDER_FAILED: return "Render failed";
-        case OjoError::OUT_OF_MEMORY: return "Out of memory";
-        case OjoError::TIMEOUT: return "Timeout";
+        case ojo::OjoError::SUCCESS: return "Success";
+        case ojo::OjoError::INVALID_PARAMETER: return "Invalid parameter";
+        case ojo::OjoError::INVALID_STATE: return "Invalid state";
+        case ojo::OjoError::INITIALIZATION_FAILED: return "Initialization failed";
+        case ojo::OjoError::CONNECTION_FAILED: return "Connection failed";
+        case ojo::OjoError::DECODE_FAILED: return "Decode failed";
+        case ojo::OjoError::RENDER_FAILED: return "Render failed";
+        case ojo::OjoError::OUT_OF_MEMORY: return "Out of memory";
+        case ojo::OjoError::TIMEOUT: return "Timeout";
+        case ojo::OjoError::UNKNOWN_ERROR: return "Unknown error";
         default: return "Unknown error";
     }
 }
 
-inline const char* stateToString(StreamState state) {
+inline const char* stateToString(ojo::StreamState state) {
     switch (state) {
-        case StreamState::IDLE: return "Idle";
-        case StreamState::CONNECTING: return "Connecting";
-        case StreamState::CONNECTED: return "Connected";
-        case StreamState::PLAYING: return "Playing";
-        case StreamState::PAUSED: return "Paused";
-        case StreamState::STOPPED: return "Stopped";
-        case StreamState::ERROR: return "Error";
+        case ojo::StreamState::IDLE: return "Idle";
+        case ojo::StreamState::CONNECTING: return "Connecting";
+        case ojo::StreamState::CONNECTED: return "Connected";
+        case ojo::StreamState::PLAYING: return "Playing";
+        case ojo::StreamState::PAUSED: return "Paused";
+        case ojo::StreamState::STOPPED: return "Stopped";
+        case ojo::StreamState::ERROR: return "Error";
         default: return "Unknown";
     }
 }
+
+// RGA (Rockchip Graphics Accelerator) types
+#ifdef HAVE_RGA
+struct RGAContext {
+    bool initialized;
+    bool available;
+    int version;
+    void* handle;
+
+    RGAContext() : initialized(false), available(false), version(0), handle(nullptr) {}
+};
+
+enum class RGAFormat {
+    UNKNOWN = 0,
+    NV12 = 1,
+    NV21 = 2,
+    YUV420P = 3,
+    RGB888 = 4,
+    RGBA8888 = 5,
+    BGRA8888 = 6
+};
+
+struct RGAOperation {
+    int srcWidth;
+    int srcHeight;
+    RGAFormat srcFormat;
+    void* srcBuffer;
+
+    int dstWidth;
+    int dstHeight;
+    RGAFormat dstFormat;
+    void* dstBuffer;
+
+    bool enableScaling;
+    bool enableColorConversion;
+    bool enableRotation;
+    int rotationDegrees;
+};
+#endif // HAVE_RGA
 
 } // namespace ojo
 

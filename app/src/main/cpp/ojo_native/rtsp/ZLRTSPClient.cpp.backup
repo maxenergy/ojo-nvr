@@ -1,0 +1,533 @@
+#include "ZLRTSPClient.h"
+#include <android/log.h>
+#include <regex>
+#include <sstream>
+
+// ZLMediaKit includes
+#include "mk_common.h"
+#include "mk_player.h"
+#include "mk_frame.h"
+#include "mk_track.h"
+
+#define LOG_TAG "OjoRTSPClient"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+namespace ojo {
+
+// ZLMediaKit callback functions
+static void on_mk_play_event_callback(void *user_data, int err_code, const char *err_msg, mk_track tracks[], int track_count) {
+    ZLRTSPClient* client = static_cast<ZLRTSPClient*>(user_data);
+    if (client) {
+        client->onPlayerEvent(err_code, err_msg, tracks, track_count);
+    }
+}
+
+static void on_mk_play_data_callback(void *user_data, int track_type, int codec_id, void *data, size_t len, uint32_t dts, uint32_t pts) {
+    ZLRTSPClient* client = static_cast<ZLRTSPClient*>(user_data);
+    if (client) {
+        client->onPlayerData(track_type, codec_id, data, len, dts, pts);
+    }
+}
+
+ZLRTSPClient::ZLRTSPClient()
+    : state_(StreamState::IDLE)
+    , player_(nullptr)
+    , playerInitialized_(false)
+    , shouldStop_(false)
+    , shouldReconnect_(false)
+    , lastFrameTime_(std::chrono::steady_clock::now())
+    , connectionStartTime_(std::chrono::steady_clock::now()) {
+
+    LOGD("ZLRTSPClient created");
+
+    // Initialize ZLMediaKit environment if not already done
+    static bool zlmediakitInitialized = false;
+    if (!zlmediakitInitialized) {
+        mk_config config = {0};
+        config.thread_num = 1;
+        config.log_level = 0;
+        config.log_mask = LOG_CONSOLE;
+        config.log_file_path = nullptr;
+        config.log_file_days = 0;
+        config.ini_is_path = 0;
+        config.ini = nullptr;
+        config.ssl_is_path = 0;
+        config.ssl = nullptr;
+        config.ssl_pwd = nullptr;
+        mk_env_init(&config);
+        zlmediakitInitialized = true;
+        LOGI("ZLMediaKit environment initialized");
+    }
+
+    // Initialize default configuration
+    config_.connectionTimeoutMs = 10000;
+    config_.readTimeoutMs = 5000;
+    config_.maxRetryAttempts = 3;
+    config_.enableHardwareDecoding = true;
+
+    // Reset statistics
+    statistics_.reset();
+}
+
+ZLRTSPClient::~ZLRTSPClient() {
+    LOGD("ZLRTSPClient destructor called");
+    stop();
+    disconnect();
+    cleanupPlayer();
+}
+
+OjoError ZLRTSPClient::connect(const std::string& rtspUrl) {
+    LOGI("Connecting to RTSP URL: %s", rtspUrl.c_str());
+    
+    if (!isValidRTSPUrl(rtspUrl)) {
+        LOGE("Invalid RTSP URL: %s", rtspUrl.c_str());
+        return OjoError::INVALID_PARAMETER;
+    }
+    
+    std::lock_guard<std::mutex> lock(configMutex_);
+    config_.rtspUrl = rtspUrl;
+    
+    setState(StreamState::CONNECTING, "Attempting to connect to RTSP stream");
+    
+    // Initialize ZLMediaKit player (placeholder implementation)
+    if (!initializePlayer()) {
+        setState(StreamState::ERROR, "Failed to initialize RTSP player");
+        return OjoError::INITIALIZATION_FAILED;
+    }
+    
+    // Start connection attempt
+    if (!attemptConnection()) {
+        setState(StreamState::ERROR, "Failed to connect to RTSP stream");
+        return OjoError::CONNECTION_FAILED;
+    }
+    
+    setState(StreamState::CONNECTED, "Successfully connected to RTSP stream");
+    return OjoError::SUCCESS;
+}
+
+void ZLRTSPClient::disconnect() {
+    LOGI("Disconnecting RTSP client");
+    
+    shouldStop_ = true;
+    shouldReconnect_ = false;
+    
+    // Stop worker threads
+    if (workerThread_.joinable()) {
+        workerThread_.join();
+    }
+    
+    if (reconnectThread_.joinable()) {
+        reconnectThread_.join();
+    }
+    
+    if (frameProcessorThread_.joinable()) {
+        frameProcessorThread_.join();
+    }
+    
+    // Cleanup player
+    cleanupPlayer();
+    
+    setState(StreamState::IDLE, "Disconnected from RTSP stream");
+}
+
+bool ZLRTSPClient::isConnected() const {
+    StreamState currentState = state_.load();
+    return currentState == StreamState::CONNECTED || currentState == StreamState::PLAYING;
+}
+
+void ZLRTSPClient::start() {
+    LOGI("Starting RTSP client");
+    
+    if (state_ == StreamState::IDLE) {
+        LOGW("Cannot start - not connected. Call connect() first.");
+        return;
+    }
+    
+    shouldStop_ = false;
+    
+    // Start worker thread
+    if (!workerThread_.joinable()) {
+        workerThread_ = std::thread(&ZLRTSPClient::workerLoop, this);
+    }
+    
+    // Start frame processor thread
+    if (!frameProcessorThread_.joinable()) {
+        frameProcessorThread_ = std::thread(&ZLRTSPClient::frameProcessorLoop, this);
+    }
+    
+    // Start reconnect thread
+    if (!reconnectThread_.joinable()) {
+        reconnectThread_ = std::thread(&ZLRTSPClient::reconnectLoop, this);
+    }
+    
+    setState(StreamState::PLAYING, "RTSP stream started");
+}
+
+void ZLRTSPClient::stop() {
+    LOGI("Stopping RTSP client");
+    
+    shouldStop_ = true;
+    
+    setState(StreamState::STOPPED, "RTSP stream stopped");
+}
+
+void ZLRTSPClient::setFrameCallback(FrameCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    frameCallback_ = callback;
+}
+
+void ZLRTSPClient::setStateCallback(StateCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    stateCallback_ = callback;
+}
+
+void ZLRTSPClient::setErrorCallback(ErrorCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    errorCallback_ = callback;
+}
+
+StreamState ZLRTSPClient::getState() const {
+    return state_.load();
+}
+
+StreamStatistics ZLRTSPClient::getStatistics() const {
+    StreamStatistics stats;
+    stats.framesReceived = statistics_.framesReceived.load();
+    stats.framesDecoded = statistics_.framesDecoded.load();
+    stats.framesRendered = statistics_.framesRendered.load();
+    stats.framesDropped = statistics_.framesDropped.load();
+    stats.bytesReceived = statistics_.bytesReceived.load();
+    stats.currentFps = statistics_.currentFps.load();
+    stats.averageFps = statistics_.averageFps.load();
+    stats.lastFrameTimestamp = statistics_.lastFrameTimestamp.load();
+    stats.connectionRetries = statistics_.connectionRetries.load();
+    return stats;
+}
+
+// Private methods implementation
+
+void ZLRTSPClient::workerLoop() {
+    LOGD("Worker loop started");
+    
+    while (!shouldStop_) {
+        try {
+            // Update statistics
+            updateStatistics();
+            
+            // Check connection health
+            if (isConnected()) {
+                // Process any pending data
+                // This would interface with ZLMediaKit's data callbacks
+            }
+            
+            // Sleep for a short interval
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            
+        } catch (const std::exception& e) {
+            LOGE("Exception in worker loop: %s", e.what());
+            reportError(OjoError::UNKNOWN_ERROR, e.what());
+        }
+    }
+    
+    LOGD("Worker loop ended");
+}
+
+void ZLRTSPClient::frameProcessorLoop() {
+    LOGD("Frame processor loop started");
+    
+    while (!shouldStop_) {
+        std::shared_ptr<VideoFrame> frame;
+        
+        // Wait for frame with timeout
+        if (frameQueue_.waitAndPop(frame, 100)) {
+            try {
+                // Update statistics
+                statistics_.framesDecoded++;
+                
+                // Call frame callback if set
+                std::lock_guard<std::mutex> lock(callbackMutex_);
+                if (frameCallback_) {
+                    frameCallback_(frame);
+                }
+                
+            } catch (const std::exception& e) {
+                LOGE("Exception in frame processor: %s", e.what());
+                statistics_.framesDropped++;
+            }
+        }
+    }
+    
+    LOGD("Frame processor loop ended");
+}
+
+void ZLRTSPClient::reconnectLoop() {
+    LOGD("Reconnect loop started");
+    
+    while (!shouldStop_) {
+        if (shouldReconnect_ && isReconnectNeeded()) {
+            LOGI("Attempting automatic reconnection");
+            
+            // Attempt reconnection
+            if (attemptConnection()) {
+                shouldReconnect_ = false;
+                setState(StreamState::CONNECTED, "Reconnected to RTSP stream");
+                statistics_.connectionRetries++;
+            } else {
+                // Wait before next attempt
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
+    
+    LOGD("Reconnect loop ended");
+}
+
+bool ZLRTSPClient::initializePlayer() {
+    LOGD("Initializing ZLMediaKit player");
+
+    if (playerInitialized_) {
+        LOGW("Player already initialized");
+        return true;
+    }
+
+    try {
+        // Create ZLMediaKit player
+        player_ = mk_player_create();
+        if (!player_) {
+            LOGE("Failed to create ZLMediaKit player");
+            return false;
+        }
+
+        // Set up event callback
+        mk_player_set_on_result(player_, on_mk_play_event_callback, this);
+
+        // Set up data callback for receiving frames
+        // TODO: Set up data callback when available in ZLMediaKit API
+
+        // Configure player options
+        mk_player_set_option(player_, "protocol_timeout", "10000");  // 10 second timeout
+        mk_player_set_option(player_, "media_timeout", "5000");     // 5 second media timeout
+        mk_player_set_option(player_, "enable_audio", "0");         // Disable audio for surveillance
+        mk_player_set_option(player_, "enable_video", "1");         // Enable video
+        mk_player_set_option(player_, "auto_close", "0");           // Don't auto close on error
+
+        playerInitialized_ = true;
+        LOGD("ZLMediaKit player initialized successfully");
+        return true;
+
+    } catch (const std::exception& e) {
+        LOGE("Failed to initialize player: %s", e.what());
+        return false;
+    }
+}
+
+void ZLRTSPClient::cleanupPlayer() {
+    LOGD("Cleaning up ZLMediaKit player");
+
+    try {
+        if (player_ && playerInitialized_) {
+            // Stop and release the player
+            mk_player_release(player_);
+            mk_player_release(player_);
+            player_ = nullptr;
+            playerInitialized_ = false;
+            LOGD("ZLMediaKit player cleaned up successfully");
+        }
+
+    } catch (const std::exception& e) {
+        LOGE("Exception during player cleanup: %s", e.what());
+    }
+}
+
+bool ZLRTSPClient::attemptConnection() {
+    LOGD("Attempting RTSP connection to: %s", config_.rtspUrl.c_str());
+
+    if (!player_ || !playerInitialized_) {
+        LOGE("Player not initialized");
+        return false;
+    }
+
+    try {
+        connectionStartTime_ = std::chrono::steady_clock::now();
+
+        // Start playing the RTSP stream
+        mk_player_play(player_, config_.rtspUrl.c_str());
+
+        LOGD("RTSP play command sent successfully");
+        return true;
+
+    } catch (const std::exception& e) {
+        LOGE("Connection attempt failed: %s", e.what());
+        return false;
+    }
+}
+
+void ZLRTSPClient::setState(StreamState newState, const std::string& message) {
+    StreamState oldState = state_.exchange(newState);
+    
+    if (oldState != newState) {
+        LOGI("State changed: %s -> %s (%s)", 
+             stateToString(oldState), stateToString(newState), message.c_str());
+        
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (stateCallback_) {
+            stateCallback_(newState, message);
+        }
+    }
+}
+
+void ZLRTSPClient::reportError(OjoError error, const std::string& message) {
+    LOGE("Error reported: %s - %s", errorToString(error), message.c_str());
+    
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    if (errorCallback_) {
+        errorCallback_(error, message);
+    }
+}
+
+bool ZLRTSPClient::isValidRTSPUrl(const std::string& url) const {
+    // Simple RTSP URL validation
+    std::regex rtspRegex(R"(^rtsp://[a-zA-Z0-9\-\.]+:[0-9]+/.*)");
+    return std::regex_match(url, rtspRegex);
+}
+
+void ZLRTSPClient::updateStatistics() {
+    auto now = std::chrono::steady_clock::now();
+    auto timeDiff = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime_);
+    
+    if (timeDiff.count() > 0) {
+        double fps = 1000.0 / timeDiff.count();
+        statistics_.currentFps = fps;
+        
+        // Update average FPS (simple moving average)
+        double currentAvg = statistics_.averageFps.load();
+        statistics_.averageFps = (currentAvg * 0.9) + (fps * 0.1);
+    }
+    
+    lastFrameTime_ = now;
+}
+
+// ZLMediaKit callback implementations
+void ZLRTSPClient::onPlayerEvent(int err_code, const char* err_msg, mk_track tracks[], int track_count) {
+    LOGD("Player event: code=%d, msg=%s, tracks=%d", err_code, err_msg ? err_msg : "null", track_count);
+
+    if (err_code == 0) {
+        // Success - connected and ready to receive data
+        setState(StreamState::PLAYING, "RTSP stream playing successfully");
+
+        // Log track information
+        for (int i = 0; i < track_count; i++) {
+            if (tracks[i]) {
+                int codec_id = mk_track_codec_id(tracks[i]);
+                LOGI("Track %d: codec_id=%d", i, codec_id);
+            }
+        }
+    } else {
+        // Error occurred
+        std::string errorMsg = err_msg ? err_msg : "Unknown error";
+        LOGE("Player error: %s (code: %d)", errorMsg.c_str(), err_code);
+        setState(StreamState::ERROR, errorMsg);
+        reportError(OjoError::CONNECTION_FAILED, errorMsg);
+
+        // Schedule reconnect if enabled
+        if (config_.maxRetryAttempts > 0 && statistics_.connectionRetries < config_.maxRetryAttempts) {
+            scheduleReconnect();
+        }
+    }
+}
+
+void ZLRTSPClient::onPlayerData(int track_type, int codec_id, void* data, size_t len, uint32_t dts, uint32_t pts) {
+    if (!data || len == 0) {
+        return;
+    }
+
+    // Only process video data for surveillance
+    if (track_type != 0) {  // 0 = video track
+        return;
+    }
+
+    // Update statistics
+    statistics_.framesReceived++;
+    statistics_.bytesReceived += len;
+    statistics_.lastFrameTimestamp = pts;
+    updateStatistics();
+
+    // Create video frame
+    auto frame = createVideoFrame(static_cast<const uint8_t*>(data), len, pts);
+    if (frame) {
+        // Determine codec type
+        switch (codec_id) {
+            case 7:  // H.264
+                frame->codec = CodecType::H264;
+                break;
+            case 12: // H.265
+                frame->codec = CodecType::H265;
+                break;
+            default:
+                frame->codec = CodecType::UNKNOWN;
+                LOGW("Unknown codec ID: %d", codec_id);
+                break;
+        }
+
+        frame->timestamp = pts;
+        frame->pts = pts;
+        frame->dts = dts;
+
+        // Queue frame for processing
+        frameQueue_.push(frame);
+
+        // Call frame callback if set
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (frameCallback_) {
+            frameCallback_(frame);
+        }
+    }
+}
+
+std::shared_ptr<VideoFrame> ZLRTSPClient::createVideoFrame(const uint8_t* data, size_t size, int64_t timestamp) {
+    auto frame = std::make_shared<VideoFrame>();
+
+    // Allocate and copy data
+    frame->data = std::make_unique<uint8_t[]>(size);
+    std::memcpy(frame->data.get(), data, size);
+    frame->dataSize = size;
+
+    // Set basic properties (will be updated by decoder)
+    frame->width = 0;  // Unknown until decoded
+    frame->height = 0; // Unknown until decoded
+    frame->format = VideoFormat::UNKNOWN;
+    frame->timestamp = timestamp;
+    frame->frameId = statistics_.framesReceived.load();
+
+    // Detect if this is a key frame (simple H.264 detection)
+    if (size >= 5) {
+        uint8_t nalType = data[4] & 0x1F;
+        frame->isKeyFrame = (nalType == 5 || nalType == 7 || nalType == 8); // IDR, SPS, PPS
+    }
+
+    return frame;
+}
+
+void ZLRTSPClient::scheduleReconnect() {
+    if (shouldReconnect_.load()) {
+        return; // Already scheduled
+    }
+
+    shouldReconnect_ = true;
+    statistics_.connectionRetries++;
+
+    LOGI("Scheduling reconnect attempt %d/%d",
+         statistics_.connectionRetries.load(), config_.maxRetryAttempts);
+
+    // Start reconnect thread if not already running
+    if (!reconnectThread_.joinable()) {
+        reconnectThread_ = std::thread(&ZLRTSPClient::reconnectLoop, this);
+    }
+}
+
+} // namespace ojo

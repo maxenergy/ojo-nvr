@@ -2,37 +2,19 @@
 #define NATIVE_SURFACE_RENDERER_H
 
 #include "../utils/ojo_types.h"
+#include "../utils/rga_utils.h"
 #include <android/native_window.h>
 #include <memory>
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <map>
 
-// Forward declarations for RGA
-extern "C" {
-    typedef struct {
-        int fd;
-        void* virAddr;
-        void* phyAddr;
-        int size;
-    } rga_buffer_t;
-    
-    typedef struct {
-        int x, y;
-        int w, h;
-        int wstride, hstride;
-        int format;
-    } rga_rect_t;
-    
-    typedef struct {
-        rga_buffer_t src;
-        rga_buffer_t dst;
-        rga_rect_t src_rect;
-        rga_rect_t dst_rect;
-        int rotation;
-        int blend;
-    } rga_info_t;
-}
+// RGA headers - use library definitions
+#ifdef HAVE_RGA
+#include "im2d.h"
+#include "im2d_type.h"
+#endif
 
 namespace ojo {
 
@@ -88,7 +70,7 @@ public:
         }
     };
     
-    RendererStatistics getStatistics() const;
+    ::ojo::RendererStatistics getStatistics() const;
     void resetStatistics();
     
     // Configuration
@@ -129,6 +111,7 @@ private:
     } displayConfig_;
     
     // RGA hardware acceleration
+    std::unique_ptr<RGAUtils> rgaUtils_;
     bool rgaAvailable_;
     void* rgaContext_;
     std::mutex rgaMutex_;
@@ -174,6 +157,14 @@ private:
     OjoError scaleFrameWithRGA(const VideoFrame& input, ANativeWindow_Buffer& output);
     
     // Format conversion
+    OjoError renderNV12ToRGBA(const VideoFrame& frame);
+    OjoError renderNV21ToRGBA(const VideoFrame& frame);
+    OjoError renderI420ToRGBA(const VideoFrame& frame);
+    OjoError renderRGB24ToRGBA(const VideoFrame& frame);
+    OjoError renderRGBA32(const VideoFrame& frame);
+    OjoError renderTestPattern();
+
+    // Legacy format conversion methods
     OjoError convertYUV420ToRGBA(const VideoFrame& input, ANativeWindow_Buffer& output);
     OjoError convertNV12ToRGBA(const VideoFrame& input, ANativeWindow_Buffer& output);
     OjoError convertRGB24ToRGBA(const VideoFrame& input, ANativeWindow_Buffer& output);

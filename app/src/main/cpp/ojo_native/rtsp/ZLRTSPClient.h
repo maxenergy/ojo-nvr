@@ -6,12 +6,23 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <set>
+#include <vector>
 
-// Forward declarations for ZLMediaKit
-namespace mediakit {
-    class PlayerProxy;
-    class MediaSource;
+// ZLMediaKit C API includes
+#ifdef HAVE_ZLMEDIAKIT
+extern "C" {
+    #include "mk_common.h"
+    #include "mk_player.h"
+    #include "mk_frame.h"
+    #include "mk_track.h"
 }
+#else
+// Forward declarations when ZLMediaKit is not available
+typedef void* mk_player;
+typedef void* mk_frame;
+typedef void* mk_track;
+#endif
 
 namespace ojo {
 
@@ -55,22 +66,38 @@ private:
     std::atomic<StreamState> state_;
     StreamConfig config_;
     mutable std::mutex configMutex_;
-    
-    // ZLMediaKit components
-    std::unique_ptr<mediakit::PlayerProxy> player_;
-    std::shared_ptr<mediakit::MediaSource> mediaSource_;
-    
+
+    // Network components
+    int rtspSocket_;
+    int rtpSocket_;
+    int rtcpSocket_;
+    std::string rtspHost_;
+    int rtspPort_;
+    std::string rtspPath_;
+    std::string rtspUsername_;
+    std::string rtspPassword_;
+
+    // RTSP protocol state
+    int cseq_;
+    std::string sessionId_;
+    std::string lastResponse_;
+    int rtpPort_;
+
+    // Media information
+    bool hasVideo_;
+    int videoPayloadType_;
+    CodecType videoCodec_;
+    std::string controlUrl_;
+
     // Threading
     std::thread workerThread_;
-    std::thread reconnectThread_;
+    std::thread rtpReceiverThread_;
     std::atomic<bool> shouldStop_;
-    std::atomic<bool> shouldReconnect_;
-    
+    std::atomic<bool> isConnected_;
+
     // Statistics and monitoring
-    StreamStatistics statistics_;
-    std::chrono::steady_clock::time_point lastFrameTime_;
-    std::chrono::steady_clock::time_point connectionStartTime_;
-    
+    AtomicStreamStatistics statistics_;
+
     // Callbacks
     FrameCallback frameCallback_;
     StateCallback stateCallback_;
@@ -78,40 +105,55 @@ private:
     StatisticsCallback statisticsCallback_;
     mutable std::mutex callbackMutex_;
     
-    // Frame processing
-    SafeQueue<std::shared_ptr<VideoFrame>> frameQueue_;
-    std::thread frameProcessorThread_;
-    
     // Internal methods
     void workerLoop();
-    void reconnectLoop();
-    void frameProcessorLoop();
-    void initializePlayer();
-    void cleanupPlayer();
+    void rtpReceiverLoop();
     void setState(StreamState newState, const std::string& message = "");
     void reportError(OjoError error, const std::string& message);
     void updateStatistics();
-    void processReceivedData(const uint8_t* data, size_t size, int64_t timestamp);
-    std::shared_ptr<VideoFrame> createVideoFrame(const uint8_t* data, size_t size, int64_t timestamp);
-    
-    // ZLMediaKit callbacks
-    void onPlayerPlay();
-    void onPlayerPause();
-    void onPlayerTeardown();
-    void onPlayerData(const uint8_t* data, size_t size, int64_t timestamp);
-    void onPlayerError(const std::string& error);
-    
-    // Connection management
-    bool attemptConnection();
-    void scheduleReconnect();
-    bool isReconnectNeeded() const;
-    
+    std::shared_ptr<VideoFrame> createVideoFrame(const uint8_t* data, size_t size, uint32_t timestamp, bool isMarker);
+
+    // RTSP protocol methods
+    bool parseRTSPUrl(const std::string& url);
+    bool connectToServer();
+    bool performRTSPHandshake();
+    bool sendOptions();
+    bool sendDescribe();
+    bool sendSetup();
+    bool sendPlay();
+    bool sendPause();
+    bool sendTeardown();
+    bool sendKeepAlive();
+    bool sendRTSPRequest(const std::string& request);
+
+    // RTP processing
+    bool createRTPSockets();
+    void processRTPPacket(const uint8_t* data, size_t size);
+    void processRTPPayload(const uint8_t* payload, size_t payloadSize,
+                          uint32_t timestamp, uint16_t sequenceNumber,
+                          bool marker, uint32_t ssrc);
+
+    // SDP parsing
+    bool parseSDP(const std::string& response);
+    void parseRTPMap(const std::string& line);
+    bool parseSessionId(const std::string& response);
+
+    // Frame assembly for RTP packets
+    struct FrameAssembly {
+        uint32_t timestamp;
+        std::vector<uint8_t> data;
+        std::set<uint16_t> receivedSequences;
+        uint16_t expectedSequences;
+        bool isComplete;
+        std::chrono::steady_clock::time_point lastUpdate;
+
+        FrameAssembly() : timestamp(0), expectedSequences(0), isComplete(false) {}
+    };
+    std::map<uint32_t, FrameAssembly> frameAssemblyMap_;
+    mutable std::mutex frameAssemblyMutex_;
+
     // Utility methods
-    CodecType detectCodecType(const uint8_t* data, size_t size);
     bool isValidRTSPUrl(const std::string& url) const;
-    void logDebug(const std::string& message) const;
-    void logError(const std::string& message) const;
-    void logInfo(const std::string& message) const;
 };
 
 /**

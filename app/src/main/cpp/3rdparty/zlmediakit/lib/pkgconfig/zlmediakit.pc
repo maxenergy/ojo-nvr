@@ -1,0 +1,10 @@
+prefix=/home/rogers/source/rockchip/aibox_android/ojo/app/src/main/cpp/3rdparty/zlmediakit
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: zlmediakit
+Description: ZLMediaKit RTSP Client Library
+Version: 1.0.0
+Libs: -L${libdir} -lzlmediakit -lzltoolkit -lmk_api
+Cflags: -I${includedir}

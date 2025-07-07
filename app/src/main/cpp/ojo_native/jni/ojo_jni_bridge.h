@@ -54,7 +54,7 @@ public:
     
 private:
     // Core components
-    std::unique_ptr<RTSPStreamManager> streamManager_;
+    std::unique_ptr<ZLRTSPClient> rtspClient_;
     std::unique_ptr<MPPDecoder> decoder_;
     std::unique_ptr<NativeSurfaceRenderer> renderer_;
     
@@ -143,64 +143,64 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved);
 
 // Player lifecycle
 JNIEXPORT jlong JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeCreatePlayer(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeCreatePlayer(
     JNIEnv* env, jobject thiz, jobject surface);
 
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeDestroyPlayer(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeDestroyPlayer(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 // Stream control
 JNIEXPORT jboolean JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeStartStream(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeStartStream(
     JNIEnv* env, jobject thiz, jlong playerHandle, jstring rtspUrl);
 
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeStopStream(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeStopStream(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativePauseStream(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativePauseStream(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeResumeStream(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeResumeStream(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 // Surface management
 JNIEXPORT jboolean JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeSetSurface(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeSetSurface(
     JNIEnv* env, jobject thiz, jlong playerHandle, jobject surface);
 
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeClearSurface(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeClearSurface(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 JNIEXPORT jboolean JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeSetDisplayRect(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeSetDisplayRect(
     JNIEnv* env, jobject thiz, jlong playerHandle, jint x, jint y, jint width, jint height);
 
 // Status queries
 JNIEXPORT jboolean JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeIsPlaying(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeIsPlaying(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 JNIEXPORT jint JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeGetState(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeGetState(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 // Configuration
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeSetConfig(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeSetConfig(
     JNIEnv* env, jobject thiz, jlong playerHandle, jobject config);
 
 JNIEXPORT jobject JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeGetStatistics(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeGetStatistics(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 // Callback setup
 JNIEXPORT void JNICALL
-Java_it_danieleverducci_ojo_OjoNativePlayer_nativeSetCallbacks(
+Java_it_danieleverducci_ojo_native_1player_OjoNativePlayer_nativeSetCallbacks(
     JNIEnv* env, jobject thiz, jlong playerHandle);
 
 }

@@ -2,42 +2,43 @@
 #define MPP_DECODER_H
 
 #include "../utils/ojo_types.h"
+#include "../utils/mpp_wrapper.h"
 #include <memory>
 #include <thread>
 #include <atomic>
 
-// Forward declarations for Rockchip MPP
-extern "C" {
-    typedef void* MppCtx;
-    typedef void* MppApi;
-    typedef void* MppFrame;
-    typedef void* MppPacket;
-    typedef void* MppBuffer;
-    typedef void* MppBufferGroup;
-    
-    typedef enum {
-        MPP_VIDEO_CodingUnused,
-        MPP_VIDEO_CodingAVC,        // H.264
-        MPP_VIDEO_CodingHEVC,       // H.265
-        MPP_VIDEO_CodingMJPEG,      // MJPEG
-        MPP_VIDEO_CodingVP8,
-        MPP_VIDEO_CodingVP9,
-        MPP_VIDEO_CodingMax
-    } MppCodingType;
-    
-    typedef enum {
-        MPP_RET_SUCCESS = 0,
-        MPP_RET_ERROR = -1,
-        MPP_NOK = -1,
-        MPP_OK = 0
-    } MPP_RET;
-}
+// Rockchip MPP includes with conflict prevention
+#ifdef HAVE_ROCKCHIP_MPP
+// MPP types are now defined through mpp_wrapper.h
+// No direct header includes to avoid conflicts
+#endif
 
 namespace ojo {
+
+// MPP decoder frame callback type
+typedef void (*MppDecoderFrameCallback)(void* userdata, int width_stride, int height_stride,
+                                       int width, int height, int format, int fd, void* data);
+
+// MPP decoder loop data structure for real hardware decoding
+typedef struct {
+    MppCtx          ctx;
+    MppApi          *mpi;
+    uint32_t        eos;
+    char            *buf;
+    MppBufferGroup  frm_grp;
+    MppBufferGroup  pkt_grp;
+    MppPacket       packet;
+    size_t          packet_size;
+    MppFrame        frame;
+    int32_t         frame_count;
+    int32_t         frame_num;
+    size_t          max_usage;
+} MpiDecLoopData;
 
 /**
  * Rockchip MPP Hardware Decoder for Ojo surveillance system
  * Provides hardware-accelerated video decoding on RK3588 platform
+ * Based on reference implementation from yolov5rtspthreadpool
  */
 class MPPDecoder {
 public:
@@ -46,6 +47,7 @@ public:
     
     // Initialization and cleanup
     OjoError initialize(CodecType codecType);
+    void stop();
     void cleanup();
     bool isInitialized() const;
     
@@ -79,7 +81,7 @@ public:
         }
     };
     
-    DecoderStatistics getStatistics() const;
+    ::ojo::DecoderStatistics getStatistics() const;
     void resetStatistics();
     
     // Error handling
@@ -96,11 +98,25 @@ public:
     bool isHardwareAccelerated() const;
     
 private:
-    // MPP context and API
+    // MPP context and API - Real hardware decoder
     MppCtx mppCtx_;
     MppApi* mppApi_;
     MppBufferGroup frameGroup_;
     MppBufferGroup packetGroup_;
+
+    // Real MPP decoder data structures
+    MpiDecLoopData loopData_;
+    MppPacket packet_;  // MPP packet handle (pointer type)
+    MppFrame frame_;    // MPP frame handle (pointer type)
+    MppCodingType mppType_;
+    uint32_t needSplit_;
+    size_t packetSize_;
+
+    // Frame callback and timing
+    MppDecoderFrameCallback frameCallback_;
+    void* userdata_;
+    int fps_;
+    unsigned long lastFrameTimeMs_;
     
     // Configuration
     CodecType codecType_;
@@ -124,18 +140,26 @@ private:
     FrameReadyCallback frameReadyCallback_;
     mutable std::mutex callbackMutex_;
     
-    // Internal methods
+    // Internal methods - Real MPP hardware implementation
     void decoderLoop();
     OjoError initializeMPP();
     void cleanupMPP();
     MppCodingType codecTypeToMpp(CodecType codec) const;
     VideoFormat mppFormatToVideoFormat(int mppFormat) const;
     int videoFormatToMppFormat(VideoFormat format) const;
+
+    // Real MPP decoder methods (based on reference implementation)
+    int initMppDecoder(int videoType, int fps, void* userdata);
+    int setMppCallback(MppDecoderFrameCallback callback);
+    int decodeMppPacket(uint8_t* pktData, int pktSize, int pktEos);
+    int resetMppDecoder();
+    static unsigned long getCurrentTimeMS();
     
-    // Frame processing
+    // Frame processing - Real hardware decoding
     OjoError processInputPacket(const uint8_t* data, size_t size, int64_t timestamp);
     std::shared_ptr<VideoFrame> processOutputFrame();
     std::shared_ptr<VideoFrame> createVideoFrameFromMpp(MppFrame mppFrame);
+    size_t calculateFrameSize(int width, int height, VideoFormat format) const;
     
     // Buffer management
     OjoError allocateFrameBuffers();
@@ -149,6 +173,7 @@ private:
     
     // Utility methods
     void updateStatistics(double decodeTime);
+    void generateTestPattern(VideoFrame* frame);
     void logDebug(const std::string& message) const;
     void logError(const std::string& message) const;
     void logInfo(const std::string& message) const;

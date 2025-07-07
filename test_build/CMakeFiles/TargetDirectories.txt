@@ -1,0 +1,3 @@
+/home/rogers/source/rockchip/aibox_android/ojo/test_build/CMakeFiles/library_test.dir
+/home/rogers/source/rockchip/aibox_android/ojo/test_build/CMakeFiles/edit_cache.dir
+/home/rogers/source/rockchip/aibox_android/ojo/test_build/CMakeFiles/rebuild_cache.dir
