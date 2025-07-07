@@ -7,6 +7,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -16,6 +17,9 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -122,6 +126,13 @@ public class SurveillanceFragment extends Fragment {
         "rtsp://192.168.31.22:8554/unicast",
         "rtsp://192.168.31.64:8554/unicast"
     };
+
+    // CameraView unique identifier counter for debugging
+    private static int nextCameraViewId = 1;
+
+    // 🔧 FIX: Simple MediaPlayer initialization delay to prevent surface conflicts
+    private static final long MEDIAPLAYER_INIT_DELAY_MS = 1000; // Delay between MediaPlayer initializations
+    private static int mediaPlayerInitOrder = 0; // Simple counter for initialization order
 
     private FragmentSurveillanceBinding binding;
     private List<CameraView> cameraViews = new ArrayList<>();
@@ -248,6 +259,13 @@ public class SurveillanceFragment extends Fragment {
             return;
         }
 
+        // 🔍 DEBUG: Enhanced multi-camera setup logging
+        Log.d(TAG, "🎥 Starting multi-camera setup with " + cc.size() + " cameras:");
+        for (int i = 0; i < cc.size(); i++) {
+            Camera cam = cc.get(i);
+            Log.d(TAG, "  Camera " + (i+1) + ": " + cam.getName() + " | URL: " + cam.getRtspUrl());
+        }
+
         // Limit concurrent streams for performance
         if (cc.size() > MAX_CONCURRENT_STREAMS) {
             Log.w(TAG, "Too many cameras (" + cc.size() + "), limiting to " + MAX_CONCURRENT_STREAMS + " for performance");
@@ -255,6 +273,7 @@ public class SurveillanceFragment extends Fragment {
         }
 
         int[] gridSize = calcGridDimensionsBasedOnNumberOfElements(cc.size());
+        Log.d(TAG, "📐 Grid layout: " + gridSize[0] + "x" + gridSize[1] + " for " + cc.size() + " cameras");
         int camIdx = 0;
         for (int r = 0; r < gridSize[0]; r++) {
             // Create row and add to row container
@@ -264,6 +283,8 @@ public class SurveillanceFragment extends Fragment {
             for (int c = 0; c < gridSize[1]; c++) {
                 if ( camIdx < cc.size() ) {
                     Camera cam = cc.get(camIdx);
+                    Log.d(TAG, "🏗️ Creating camera view " + (camIdx + 1) + "/" + cc.size() +
+                          " at position [" + r + "," + c + "] for " + cam.getName());
                     CameraView cv = addCameraView(cam, row);
                     cv.startPlayback();
                     cv.setOnClickListener(new View.OnClickListener() {
@@ -332,6 +353,8 @@ public class SurveillanceFragment extends Fragment {
                 camera
         );
 
+        Log.d(TAG, "▶️ Started playback for camera " + cameraViews.size() + ": " + camera.getName());
+
         // Add to layout
         rowContainer.addView(cv.surfaceView, cameraViewLayoutParams);
 
@@ -339,7 +362,37 @@ public class SurveillanceFragment extends Fragment {
         return cv;
     }
 
+    /**
+     * 🔍 DEBUG: Check for surface conflicts between camera views
+     */
+    private void checkSurfaceConflicts() {
+        Map<Integer, String> surfaceMap = new HashMap<>();
+        int conflictCount = 0;
 
+        for (CameraView cv : cameraViews) {
+            if (cv.currentSurface != null) {
+                int hash = cv.surfaceHashCode;
+                if (surfaceMap.containsKey(hash)) {
+                    Log.e(TAG, "🚨 SURFACE CONFLICT DETECTED! Hash " + hash +
+                          " used by both " + surfaceMap.get(hash) + " and " + cv.cameraViewId);
+                    conflictCount++;
+                } else {
+                    surfaceMap.put(hash, cv.cameraViewId);
+                }
+            }
+        }
+
+        if (conflictCount > 0) {
+            Log.e(TAG, "🚨 Total surface conflicts: " + conflictCount);
+        } else {
+            Log.d(TAG, "✅ No surface conflicts detected. Active surfaces: " + surfaceMap.size());
+        }
+
+        // Log all active surfaces for debugging
+        for (Map.Entry<Integer, String> entry : surfaceMap.entrySet()) {
+            Log.d(TAG, "📱 Active surface: " + entry.getValue() + " | Hash: " + entry.getKey());
+        }
+    }
 
     /**
      * Returns the dimensions of the grid based on the number of elements.
@@ -416,6 +469,14 @@ public class SurveillanceFragment extends Fragment {
         protected boolean useNativePlayer = false; // Flag to switch to native player
         protected boolean useOjoNativePlayer = false; // Flag to use Ojo native player
 
+        // Unique identifier for debugging surface management
+        protected final String cameraViewId;
+
+        // 🔍 DEBUG: Surface management tracking
+        protected Surface currentSurface = null;
+        protected long surfaceCreationTime = 0;
+        protected int surfaceHashCode = 0;
+
         // Adaptive quality control variables
         protected android.os.Handler networkMonitorHandler;
         protected Runnable networkMonitorRunnable;
@@ -426,6 +487,12 @@ public class SurveillanceFragment extends Fragment {
 
         public CameraView(Context context, Camera camera) {
             this.camera = camera;
+            this.cameraViewId = "CameraView-" + (nextCameraViewId++) + "-" + camera.getName();
+
+            Log.d(TAG, "🏗️ Creating " + cameraViewId +
+                  " | Camera: " + camera.getName() +
+                  " | URL: " + camera.getRtspUrl() +
+                  " | Total cameras: " + (cameraViews.size() + 1));
 
             // Start performance monitoring for camera initialization
             if (performanceMonitor != null) {
@@ -453,7 +520,19 @@ public class SurveillanceFragment extends Fragment {
             holder.addCallback(new SurfaceHolder.Callback() {
                 @Override
                 public void surfaceCreated(SurfaceHolder holder) {
-                    Log.d(TAG, "Surface created for camera: " + camera.getName());
+                    // 🔍 DEBUG: Enhanced surface tracking
+                    currentSurface = holder.getSurface();
+                    surfaceCreationTime = System.currentTimeMillis();
+                    surfaceHashCode = currentSurface.hashCode();
+
+                    Log.d(TAG, "🎬 Surface created for " + cameraViewId +
+                          " | Hash: " + surfaceHashCode +
+                          " | Camera: " + camera.getName() +
+                          " | Total cameras: " + cameraViews.size());
+
+                    // 🔍 DEBUG: Check for surface conflicts
+                    checkSurfaceConflicts();
+
                     // Surface is ready, players can use it
 
                     // If using native MediaPlayer, try to set surface again
@@ -855,6 +934,7 @@ public class SurveillanceFragment extends Fragment {
                     ojoNativePlayer.stopStream();
                     ojoNativePlayer.destroyPlayer();
                     ojoNativePlayer = null;
+                    Log.d(TAG, "✅ OjoNativePlayer cleaned up for " + cameraViewId);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Error during player cleanup for " + camera.getName() + ": " + e.getMessage());
@@ -1873,7 +1953,23 @@ public class SurveillanceFragment extends Fragment {
                 return;
             }
 
-            Log.d(TAG, "Switching to native MediaPlayer for camera: " + camera.getName());
+            Log.d(TAG, "Switching to native MediaPlayer for " + cameraViewId);
+
+            // 🔧 FIX: Simple sequential MediaPlayer initialization to prevent conflicts
+            int myInitOrder = ++mediaPlayerInitOrder;
+            long delayMs = myInitOrder * MEDIAPLAYER_INIT_DELAY_MS;
+
+            Log.d(TAG, "🎬 MediaPlayer initialization order " + myInitOrder + " for " + cameraViewId +
+                  " (delay: " + delayMs + "ms)");
+
+            // Add delay to prevent rapid MediaPlayer initialization conflicts
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+
             useNativePlayer = true;
 
             try {
@@ -1923,7 +2019,8 @@ public class SurveillanceFragment extends Fragment {
                 newHolder.addCallback(new SurfaceHolder.Callback() {
                     @Override
                     public void surfaceCreated(SurfaceHolder holder) {
-                        Log.d(TAG, "Surface created for MediaPlayer camera: " + camera.getName());
+                        Log.d(TAG, "🎬 Surface created for " + cameraViewId + " (MediaPlayer)");
+                        Log.d(TAG, "Video should now be visible for " + cameraViewId);
 
                         // CRITICAL: Set surface to MediaPlayer when surface is ready
                         if (useNativePlayer && nativeMediaPlayer != null) {
@@ -2001,6 +2098,9 @@ public class SurveillanceFragment extends Fragment {
                         mp.start();
                         Log.d(TAG, "Native MediaPlayer started for camera: " + camera.getName());
                         Log.d(TAG, "Video should now be visible for camera: " + camera.getName());
+
+                        // 🔧 FIX: Log MediaPlayer initialization completion
+                        Log.d(TAG, "✅ MediaPlayer initialization completed for " + cameraViewId);
                     }
                 });
 
@@ -2027,6 +2127,10 @@ public class SurveillanceFragment extends Fragment {
 
                         currentState = PlayerState.ERROR;
                         drawTestPattern(surfaceView.getHolder());
+
+                        // 🔧 FIX: Log MediaPlayer initialization failure
+                        Log.d(TAG, "❌ MediaPlayer initialization failed for " + cameraViewId);
+
                         return true;
                     }
                 });
@@ -2124,6 +2228,9 @@ public class SurveillanceFragment extends Fragment {
 
                 // Create Ojo Native Player
                 ojoNativePlayer = new OjoNativePlayer();
+                Log.d(TAG, "🎮 Created new OjoNativePlayer instance for " + cameraViewId +
+                      " | Camera: " + camera.getName() +
+                      " | Player hash: " + ojoNativePlayer.hashCode());
 
                 // Set up player listener
                 ojoNativePlayer.setListener(new OjoNativePlayer.PlayerListener() {
@@ -2167,19 +2274,25 @@ public class SurveillanceFragment extends Fragment {
                 });
 
                 // Create player with surface
+                Log.d(TAG, "🎬 Creating OjoNativePlayer with surface for " + cameraViewId +
+                      " | Surface hash: " + surfaceView.getHolder().getSurface().hashCode() +
+                      " | Camera: " + camera.getName());
+
                 if (ojoNativePlayer.createPlayer(surfaceView.getHolder().getSurface())) {
+                    Log.d(TAG, "✅ OjoNativePlayer created successfully for " + cameraViewId);
+
                     // Start streaming
                     if (ojoNativePlayer.startStream(camera.getRtspUrl())) {
                         Log.d(TAG, "Ojo Native Player setup completed for camera: " + camera.getName());
                         currentState = PlayerState.PREPARING;
                     } else {
-                        Log.e(TAG, "Failed to start Ojo Native Player stream - falling back to MediaPlayer");
+                        Log.e(TAG, "❌ Failed to start Ojo Native Player stream for " + cameraViewId + " - falling back to MediaPlayer");
                         // Trigger MediaPlayer fallback
                         switchToNativeMediaPlayer();
                         return;
                     }
                 } else {
-                    Log.e(TAG, "Failed to create Ojo Native Player - falling back to MediaPlayer");
+                    Log.e(TAG, "❌ Failed to create Ojo Native Player for " + cameraViewId + " - falling back to MediaPlayer");
                     // Trigger MediaPlayer fallback
                     switchToNativeMediaPlayer();
                     return;
